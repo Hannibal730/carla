@@ -1,0 +1,7 @@
+# Ignore everything in this repository by default.
+/*
+
+# Keep only the files/directories we want to push.
+!/PythonAPI/
+!/howtorun.md
+!/.gitignore
