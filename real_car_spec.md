@@ -1,0 +1,14 @@
+Target vehicle:
+- Type: 1/5 scale autonomous racing car
+- Real vehicle length: [1.4 m]
+- Real vehicle width: [0.775 m]
+- Real vehicle height: [0.531 m]
+- Wheelbase: [0.724 m]
+- Front track width: [0.765 m]
+- Rear track width: [0.765 m]
+- Wheel radius: [0.135 m]
+- Wheel width: [0.1 m]
+- Ground clearance: [0.13 m]
+- Approximate mass: [15 kg]
+- Drive type: [AWD]
+- Steering: front wheel steering
