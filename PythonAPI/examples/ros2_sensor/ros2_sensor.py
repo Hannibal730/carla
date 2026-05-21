@@ -131,7 +131,7 @@ def _quaternion_from_euler(roll, pitch, yaw):
 
 
 class PythonRos2Publisher:
-    def __init__(self, vehicle_id, base_frame, sensors, sensors_config):
+    def __init__(self, vehicle_id, base_frame, sensors, sensors_config, vehicle=None):
         import rclpy
         from geometry_msgs.msg import TransformStamped
         from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2, PointField
@@ -160,13 +160,13 @@ class PythonRos2Publisher:
         self.node = rclpy.create_node("carla_ros2_sensor_python")
         self.static_tf_broadcaster = StaticTransformBroadcaster(self.node)
 
-        self._publish_static_transforms(base_frame, sensors_config)
+        self._publish_static_transforms(base_frame, sensors_config, vehicle)
         self._start_publishers(vehicle_id, sensors, sensors_config)
 
     def _now(self):
         return self.node.get_clock().now().to_msg()
 
-    def _publish_static_transforms(self, base_frame, sensors_config):
+    def _publish_static_transforms(self, base_frame, sensors_config, vehicle=None):
         transforms = []
         stamp = self._now()
 
@@ -194,8 +194,41 @@ class PythonRos2Publisher:
             transform.transform.rotation.w = qw
             transforms.append(transform)
 
+        if vehicle is not None:
+            transforms.extend(self._wheel_transforms(base_frame, stamp, vehicle))
+
         if transforms:
             self.static_tf_broadcaster.sendTransform(transforms)
+
+    def _wheel_transforms(self, base_frame, stamp, vehicle):
+        vt = vehicle.get_transform()
+        vx, vy, vz = vt.location.x, vt.location.y, vt.location.z
+        yaw = math.radians(vt.rotation.yaw)
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+
+        transforms = []
+        wheel_names = ['fl', 'fr', 'rl', 'rr']
+        for wheel, name in zip(vehicle.get_physics_control().wheels, wheel_names):
+            dx = wheel.position.x / 100.0 - vx
+            dy = wheel.position.y / 100.0 - vy
+            dz = wheel.position.z / 100.0 - vz
+
+            # World displacement → vehicle-local CARLA frame (inverse yaw rotation)
+            local_x = dx * cos_yaw + dy * sin_yaw
+            local_y = -(- dx * sin_yaw + dy * cos_yaw)  # negate for CARLA→ROS Y
+
+            t = self.TransformStamped()
+            t.header.stamp = stamp
+            t.header.frame_id = base_frame
+            t.child_frame_id = "microlino/wheel_{}".format(name)
+            t.transform.translation.x = local_x
+            t.transform.translation.y = local_y
+            t.transform.translation.z = dz
+            t.transform.rotation.w = 1.0
+            transforms.append(t)
+
+        return transforms
 
     def _start_publishers(self, vehicle_id, sensors, sensors_config):
         for sensor, sensor_config in zip(sensors, sensors_config):
@@ -373,7 +406,7 @@ def main(args):
 
         if args.python_ros2:
             ros2_publisher = PythonRos2Publisher(
-                config.get("id"), args.base_frame, sensors, sensors_config)
+                config.get("id"), args.base_frame, sensors, sensors_config, vehicle=vehicle)
 
         if args.passive:
             logging.info("Running in passive mode. Keeping ROS2 sensors alive without ticking the world...")
