@@ -46,3 +46,4 @@ pkill -TERM -f 'ros2_native.py'
 pkill -TERM -f 'manual_control.py'
 pkill -TERM -f 'rviz2'
 pkill -TERM -f 'CarlaUE4-Linux-Shipping'
+
