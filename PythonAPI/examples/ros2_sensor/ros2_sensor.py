@@ -90,16 +90,21 @@ def _setup_sensors(world, vehicle, sensors_config, enable_native_ros=True):
         for key, value in sensor.get("attributes", {}).items():
             bp.set_attribute(str(key), str(value))
 
-        wp = carla.Transform(
-            location=carla.Location(
-                x=sensor["spawn_point"]["x"],
-                y=-sensor["spawn_point"]["y"],
-                z=sensor["spawn_point"]["z"]),
-            rotation=carla.Rotation(
-                roll=sensor["spawn_point"]["roll"],
-                pitch=-sensor["spawn_point"]["pitch"],
-                yaw=-sensor["spawn_point"]["yaw"])
-        )
+        if sensor.get("type") == "sensor.other.gnss":
+            cx, cy, cz = _rear_axle_center_carla(vehicle)
+            wp = carla.Transform(
+                location=carla.Location(x=cx, y=cy, z=cz),
+                rotation=carla.Rotation())
+        else:
+            wp = carla.Transform(
+                location=carla.Location(
+                    x=sensor["spawn_point"]["x"],
+                    y=-sensor["spawn_point"]["y"],
+                    z=sensor["spawn_point"]["z"]),
+                rotation=carla.Rotation(
+                    roll=sensor["spawn_point"]["roll"],
+                    pitch=-sensor["spawn_point"]["pitch"],
+                    yaw=-sensor["spawn_point"]["yaw"]))
 
         sensors.append(
             world.spawn_actor(bp, wp, attach_to=vehicle)
@@ -128,6 +133,23 @@ def _quaternion_from_euler(roll, pitch, yaw):
         cr * cp * sy - sr * sp * cy,
         cr * cp * cy + sr * sp * sy,
     )
+
+
+def _rear_axle_center_carla(vehicle):
+    """Rear axle center in vehicle-local CARLA frame (x=fwd, y=right, z=up), meters."""
+    vt = vehicle.get_transform()
+    vx, vy, vz = vt.location.x, vt.location.y, vt.location.z
+    yaw = math.radians(vt.rotation.yaw)
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+    wheels = vehicle.get_physics_control().wheels
+    cx = cy = cz = 0.0
+    for w in (wheels[2], wheels[3]):  # rl, rr
+        dx = w.position.x / 100.0 - vx
+        dy = w.position.y / 100.0 - vy
+        cx += dx * cos_yaw + dy * sin_yaw
+        cy += -dx * sin_yaw + dy * cos_yaw
+        cz += w.position.z / 100.0 - vz
+    return cx / 2.0, cy / 2.0, cz / 2.0
 
 
 class PythonRos2Publisher:
@@ -170,6 +192,10 @@ class PythonRos2Publisher:
         transforms = []
         stamp = self._now()
 
+        rear_axle_carla = None
+        if vehicle is not None:
+            rear_axle_carla = _rear_axle_center_carla(vehicle)
+
         for sensor_config in sensors_config:
             sensor_id = sensor_config.get("id")
             spawn_point = sensor_config.get("spawn_point", {})
@@ -180,9 +206,16 @@ class PythonRos2Publisher:
             transform.header.stamp = stamp
             transform.header.frame_id = base_frame
             transform.child_frame_id = sensor_id
-            transform.transform.translation.x = float(spawn_point.get("x", 0.0))
-            transform.transform.translation.y = float(spawn_point.get("y", 0.0))
-            transform.transform.translation.z = float(spawn_point.get("z", 0.0))
+
+            if sensor_config.get("type") == "sensor.other.gnss" and rear_axle_carla is not None:
+                cx, cy, cz = rear_axle_carla
+                transform.transform.translation.x = cx
+                transform.transform.translation.y = -cy  # CARLA y_right → ROS y_left
+                transform.transform.translation.z = cz
+            else:
+                transform.transform.translation.x = float(spawn_point.get("x", 0.0))
+                transform.transform.translation.y = float(spawn_point.get("y", 0.0))
+                transform.transform.translation.z = float(spawn_point.get("z", 0.0))
 
             qx, qy, qz, qw = _quaternion_from_euler(
                 float(spawn_point.get("roll", 0.0)),

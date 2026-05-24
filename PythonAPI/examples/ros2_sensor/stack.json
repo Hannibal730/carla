@@ -1,5 +1,5 @@
 {
-    "type": "vehicle.lincoln.mkz_2017",
+    "type": "vehicle.micro.microlino",
     "id": "car",
     "sensors": [
         {
