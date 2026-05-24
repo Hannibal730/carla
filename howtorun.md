@@ -5,8 +5,7 @@
 cd ~/carla
 source /opt/ros/humble/setup.bash
 
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
-./CarlaUE4.sh -RenderOffScreen -quality-level=Low --ros2
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia ./CarlaUE4.sh -RenderOffScreen -quality-level=Low --ros2
 
 
 ## 2번 터미널: 수동 조종 차량 (동일)
@@ -14,10 +13,11 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
 cd ~/carla
 source .venv/bin/activate
 
+python PythonAPI/util/config.py --no-rendering
 
-python PythonAPI/examples/manual_control.py --rolename car --filter vehicle.micro.microlino --generation 1
+python PythonAPI/util/config.py --map Town01_Opt
 
-
+python PythonAPI/examples/manual_control.py --rolename car --filter vehicle.micro.microlino --generation 2 --sync
 
 
 ## 3번 터미널: ROS2 센서 publisher
