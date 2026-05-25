@@ -92,8 +92,12 @@ def _setup_sensors(world, vehicle, sensors_config, enable_native_ros=True):
 
         if sensor.get("type") == "sensor.other.gnss":
             cx, cy, cz = _rear_axle_center_carla(vehicle)
+            sp = sensor.get("spawn_point", {})
             wp = carla.Transform(
-                location=carla.Location(x=cx, y=cy, z=cz),
+                location=carla.Location(
+                    x=cx + float(sp.get("x", 0.0)),
+                    y=cy - float(sp.get("y", 0.0)),
+                    z=cz + float(sp.get("z", 0.0))),
                 rotation=carla.Rotation())
         else:
             wp = carla.Transform(
@@ -209,9 +213,10 @@ class PythonRos2Publisher:
 
             if sensor_config.get("type") == "sensor.other.gnss" and rear_axle_carla is not None:
                 cx, cy, cz = rear_axle_carla
-                transform.transform.translation.x = cx
-                transform.transform.translation.y = -cy  # CARLA y_right → ROS y_left
-                transform.transform.translation.z = cz
+                sp = sensor_config.get("spawn_point", {})
+                transform.transform.translation.x = cx + float(sp.get("x", 0.0))
+                transform.transform.translation.y = -cy + float(sp.get("y", 0.0))
+                transform.transform.translation.z = cz + float(sp.get("z", 0.0))
             else:
                 transform.transform.translation.x = float(spawn_point.get("x", 0.0))
                 transform.transform.translation.y = float(spawn_point.get("y", 0.0))
