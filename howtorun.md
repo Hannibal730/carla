@@ -57,6 +57,7 @@ python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
 
 # 주의: --python-ros2 를 반드시 포함해야 static TF(base_link → 각 센서)가
 #       퍼블리시된다. 없으면 RViz에서 아무것도 렌더링되지 않는다.
+#       이 노드는 CARLA simulation clock(/clock)도 발행한다.
 
 ## 4번 터미널: RViz
 
@@ -64,7 +65,7 @@ python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
 
 source /opt/ros/humble/setup.bash
 
-rviz2 -d /home/hannibal/carla/PythonAPI/examples/ros2_sensor/rviz/ros2_sensor.rviz
+rviz2 -d /home/hannibal/carla/PythonAPI/examples/ros2_sensor/rviz/ros2_sensor.rviz --ros-args -p use_sim_time:=true
 
 
 
@@ -83,4 +84,3 @@ wheel[0]: x=17.492 y=69.149 z=0.250
 wheel[1]: x=17.490 y=70.340 z=0.250
 wheel[2]: x=15.967 y=69.380 z=0.250
 wheel[3]: x=15.965 y=70.102 z=0.250
-

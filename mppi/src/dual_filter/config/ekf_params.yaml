@@ -1,0 +1,108 @@
+# =============================================================================
+# Dual EKF parameters — REP-105 compliant
+#   map → odom  : global_ekf  (world_frame: map)
+#   odom → base_link : local_ekf (world_frame: odom)
+#
+# Topic remappings are handled in dual_filter.launch.py:
+#   /imu/data  ←  /carla/car/imu/data
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Node 1: Local EKF  —  smooth, GNSS-free odometry for MPPI controller
+#   Inputs : /wheel/odom (vx, vy=0)  +  /imu/data (wz)
+#   Output : /odometry/local  +  odom → base_link TF
+# -----------------------------------------------------------------------------
+local_ekf:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 50.0
+    two_d_mode: true
+    publish_tf: true
+
+    map_frame:       map
+    odom_frame:      odom
+    base_link_frame: base_link
+    world_frame:     odom        # local EKF lives in odom frame
+
+    # /wheel/odom  — vx (linear.x) + non-holonomic vy=0 constraint
+    # config: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    odom0: /wheel/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_nodelay: true
+    odom0_differential: false
+    odom0_relative: false
+
+    # /imu/data  — angular velocity z only
+    # (orientation disabled: dual GNSS azimuth is used instead via global EKF)
+    # launch remapping: /imu/data ← /carla/car/imu/data
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 10
+    imu0_nodelay: true
+    imu0_differential: false
+    imu0_relative: false
+
+# -----------------------------------------------------------------------------
+# Node 3: Global EKF  —  GNSS drift correction, absolute position for path tracking
+#   Inputs : /wheel/odom (vx, vy=0)  +  /imu/data (wz)  +  /odometry/gnss (x, y, yaw)
+#   Output : /odometry/global  +  map → odom TF
+# -----------------------------------------------------------------------------
+global_ekf:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 30.0
+    two_d_mode: true
+    publish_tf: true
+
+    map_frame:       map
+    odom_frame:      odom
+    base_link_frame: base_link
+    world_frame:     map         # global EKF lives in map frame → publishes map→odom TF
+
+    # /wheel/odom  — vx (linear.x) + non-holonomic vy=0 constraint
+    odom0: /wheel/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_nodelay: true
+    odom0_differential: false
+    odom0_relative: false
+
+    # /imu/data  — angular velocity z only, high-frequency prediction support
+    # launch remapping: /imu/data ← /carla/car/imu/data
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 10
+    imu0_nodelay: true
+    imu0_differential: false
+    imu0_relative: false
+
+    # /odometry/gnss  — UTM absolute position (x, y) + azimuth yaw
+    # correction stage: removes long-term drift accumulated in local EKF
+    # odom1_config: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    odom1: /odometry/gnss
+    odom1_config: [true,  true,  false,
+                   false, false, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_nodelay: true
+    odom1_differential: false
+    odom1_relative: false

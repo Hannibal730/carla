@@ -160,6 +160,8 @@ class PythonRos2Publisher:
     def __init__(self, vehicle_id, base_frame, sensors, sensors_config, vehicle=None):
         import rclpy
         from geometry_msgs.msg import TransformStamped
+        from nav_msgs.msg import Odometry
+        from rosgraph_msgs.msg import Clock
         from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2, PointField
         from std_msgs.msg import Header
         from tf2_ros import StaticTransformBroadcaster
@@ -169,28 +171,70 @@ class PythonRos2Publisher:
         self.Image = Image
         self.Imu = Imu
         self.NavSatFix = NavSatFix
+        self.Odometry = Odometry
         self.PointCloud2 = PointCloud2
         self.PointField = PointField
+        self.Clock = Clock
         self.Header = Header
         self.TransformStamped = TransformStamped
         self.sensors = sensors
+        self.vehicle = vehicle
         self.active = True
+        self._last_clock_sim_time = None
+        self._last_wheel_odom_sim_time = None
         self._sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=5)
+        self._clock_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1)
+        # GNSS subscribers (gnss_to_utm C++ nodes) use RELIABLE QoS by default.
+        # BEST_EFFORT publisher → RELIABLE subscriber = no connection in DDS.
+        self._gnss_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10)
 
         if not rclpy.ok():
             rclpy.init(args=None)
 
         self.node = rclpy.create_node("carla_ros2_sensor_python")
         self.static_tf_broadcaster = StaticTransformBroadcaster(self.node)
+        self._clock_pub = self.node.create_publisher(Clock, '/clock', self._clock_qos)
 
         self._publish_static_transforms(base_frame, sensors_config, vehicle)
         self._start_publishers(vehicle_id, sensors, sensors_config)
 
+        if vehicle is not None:
+            self._wheel_odom_pub = self.node.create_publisher(
+                Odometry, '/wheel/odom', self._sensor_qos)
+            self.node.create_timer(1.0 / 20.0, self._publish_wheel_odom)
+
     def _now(self):
         return self.node.get_clock().now().to_msg()
+
+    def _stamp_from_carla_time(self, timestamp):
+        stamp = self._now()
+        sec = int(timestamp)
+        nanosec = int((timestamp - sec) * 1e9)
+        if nanosec >= 1000000000:
+            sec += 1
+            nanosec -= 1000000000
+        stamp.sec = sec
+        stamp.nanosec = nanosec
+        return stamp
+
+    def _publish_clock(self, sim_time):
+        if (self._last_clock_sim_time is not None and
+                sim_time <= self._last_clock_sim_time):
+            return
+        self._last_clock_sim_time = sim_time
+
+        msg = self.Clock()
+        msg.clock = self._stamp_from_carla_time(sim_time)
+        self._publish(self._clock_pub, msg)
 
     def _publish_static_transforms(self, base_frame, sensors_config, vehicle=None):
         transforms = []
@@ -290,7 +334,7 @@ class PythonRos2Publisher:
 
             elif sensor_type == "sensor.other.gnss":
                 publisher = self.node.create_publisher(
-                    self.NavSatFix, "{}/fix".format(topic_prefix), self._sensor_qos)
+                    self.NavSatFix, "{}/fix".format(topic_prefix), self._gnss_qos)
                 sensor.listen(
                     lambda data, pub=publisher, frame_id=sensor_id:
                     self._publish_gnss(pub, frame_id, data))
@@ -351,7 +395,9 @@ class PythonRos2Publisher:
             return
 
         msg = self.NavSatFix()
-        msg.header.stamp = self._now()
+        # Use CARLA simulation timestamp so f9r and f9p share the same stamp
+        # within the same tick — required for azimuth_angle_calculator sync check.
+        msg.header.stamp = self._stamp_from_carla_time(gnss.timestamp)
         msg.header.frame_id = frame_id
         msg.latitude = gnss.latitude
         msg.longitude = gnss.longitude
@@ -363,16 +409,71 @@ class PythonRos2Publisher:
             return
 
         msg = self.Imu()
-        msg.header.stamp = self._now()
+        msg.header.stamp = self._stamp_from_carla_time(imu.timestamp)
         msg.header.frame_id = frame_id
-        msg.linear_acceleration.x = imu.accelerometer.x
-        msg.linear_acceleration.y = imu.accelerometer.y
-        msg.linear_acceleration.z = imu.accelerometer.z
-        msg.angular_velocity.x = imu.gyroscope.x
-        msg.angular_velocity.y = imu.gyroscope.y
-        msg.angular_velocity.z = imu.gyroscope.z
-        msg.orientation.w = 1.0
+        # CARLA uses X=fwd, Y=right, Z=up. ROS base_link uses X=fwd, Y=left,
+        # Z=up, so yaw-rate sign must flip together with the lateral axis.
+        msg.linear_acceleration.x =  imu.accelerometer.x
+        msg.linear_acceleration.y = -imu.accelerometer.y
+        msg.linear_acceleration.z =  imu.accelerometer.z
+        msg.angular_velocity.x =  imu.gyroscope.x
+        msg.angular_velocity.y = -imu.gyroscope.y
+        msg.angular_velocity.z = -imu.gyroscope.z
+        msg.orientation_covariance[0] = -1.0  # heading은 dual GNSS(f9p - f9r) 차분으로 제공
+
+        angular_velocity_cov = [0.0] * 9
+        angular_velocity_cov[0] = 1e9
+        angular_velocity_cov[4] = 1e9
+        angular_velocity_cov[8] = 0.0025
+        msg.angular_velocity_covariance = angular_velocity_cov
+
+        linear_acceleration_cov = [0.0] * 9
+        linear_acceleration_cov[0] = 0.019 * 0.019
+        linear_acceleration_cov[4] = 0.019 * 0.019
+        linear_acceleration_cov[8] = 0.019 * 0.019
+        msg.linear_acceleration_covariance = linear_acceleration_cov
+
         self._publish(publisher, msg)
+
+    def _publish_wheel_odom(self):
+        if not self.active or self.vehicle is None:
+            return
+
+        snapshot = self.vehicle.get_world().get_snapshot()
+        sim_time = snapshot.timestamp.elapsed_seconds
+        self._publish_clock(sim_time)
+
+        if (self._last_wheel_odom_sim_time is not None and
+                sim_time <= self._last_wheel_odom_sim_time):
+            return
+        self._last_wheel_odom_sim_time = sim_time
+
+        vel = self.vehicle.get_velocity()          # world frame, m/s
+        yaw = math.radians(self.vehicle.get_transform().rotation.yaw)
+
+        # world-frame velocity → vehicle body-frame forward speed
+        vx = vel.x * math.cos(yaw) + vel.y * math.sin(yaw)
+
+        msg = self.Odometry()
+        msg.header.stamp = self._stamp_from_carla_time(sim_time)
+        msg.header.frame_id = "odom"
+        msg.child_frame_id = "base_link"
+        msg.twist.twist.linear.x = vx
+        msg.twist.twist.linear.y = 0.0
+
+        # /wheel/odom supplies planar wheel constraints: forward speed and the
+        # non-holonomic side-slip constraint (vy ~= 0). Yaw-rate is supplied by
+        # /imu/data.angular_velocity.z, so mark angular axes as unusable here.
+        twist_cov = [0.0] * 36
+        twist_cov[0] = 0.05
+        twist_cov[7] = 0.01
+        twist_cov[14] = 1e9
+        twist_cov[21] = 1e9
+        twist_cov[28] = 1e9
+        twist_cov[35] = 1e9
+        msg.twist.covariance = twist_cov
+
+        self._publish(self._wheel_odom_pub, msg)
 
     def _publish(self, publisher, msg):
         try:

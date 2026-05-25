@@ -12,3 +12,11 @@ __pycache__/
 *.py[cod]
 PythonAPI/**/__pycache__/
 PythonAPI/**/*.py[cod]
+
+
+!/mppi/
+!/mppi/src/
+!/mppi/src/dual_filter/
+!/mppi/src/dual_filter/**
+!/mppi/src/gnss_to_utm/
+!/mppi/src/gnss_to_utm/**
