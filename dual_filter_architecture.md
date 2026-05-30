@@ -17,7 +17,7 @@
 
 *   **Target OS / Middleware:** Ubuntu 22.04 / ROS 2 Humble
 *   **Target Package:** `robot_localization`
-*   **Sensor Inputs:** CARLA Vehicle API (→ `/wheel/odom`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
+*   **Sensor Inputs:** CARLA Vehicle API (→ `/odometry/wheel`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
 *   **Controller:** MPPI
 
 ---
@@ -27,10 +27,10 @@
 시스템은 다음의 계층적 TF 트리를 반드시 유지해야 한다.
 
 ```
-map ──[global_ekf]──> odom ──[local_ekf]──> base_link
+utm ──[global_ekf]──> odom ──[local_ekf]──> base_link
 ```
 
-본 시스템에는 EKF 기반 TF 트리(dual_filter 스택)와, 독립적인 GNSS 전용 경로 추종 프레임(`csv`)이 별도로 존재한다. 두 스택은 TF 트리를 공유하지 않는다.
+본 시스템의 TF 트리는 dual_filter 스택이 담당한다. 경로 파일 처리는 `csv_to_utm` 노드가 `/utm_datum`을 공유받아 `/csv_path`를 `utm` 프레임으로 발행한다.
 
 ---
 
@@ -73,87 +73,87 @@ map ──[global_ekf]──> odom ──[local_ekf]──> base_link
 
 ---
 
-### 2.3 `map` — 전역 절대 기준점
+### 2.3 `utm` — 전역 절대 기준점
 
-**원점:** `utm_to_odometry.py`에서 설정한 `datum_easting / datum_northing` (UTM 좌표). 이 점이 ROS의 `(0, 0)` map 원점이 된다.
+**원점:** `gnss_to_odom.py`에서 설정한 `datum_easting / datum_northing` (UTM 좌표). 이 점이 ROS의 `(0, 0)` utm 원점이 된다.
 
 ```
-현재 설정 (utm_to_odometry.py):
+현재 설정 (gnss_to_odom.py):
   datum_easting  = 첫 번째 f9r GNSS 수신 시의 UTM easting
   datum_northing = 첫 번째 f9r GNSS 수신 시의 UTM northing
 
-→ datum이 실행마다 달라지므로 map 원점도 실행마다 달라진다.
-  datum을 고정 UTM 값으로 하드코딩하면 map 원점도 항상 일정해진다.
+→ datum이 실행마다 달라지므로 utm 원점도 실행마다 달라진다.
+  datum을 고정 UTM 값으로 하드코딩하면 utm 원점도 항상 일정해진다.
 ```
 
-`map` 프레임을 이해하는 핵심은 **`map`이 `odom`을 보정하는 프레임**이라는 것이다.
+`utm` 프레임을 이해하는 핵심은 **`utm`이 `odom`을 보정하는 프레임**이라는 것이다.
 
 ```
 [이해하기 어려운 이유]
-직관적으로는: map → base_link 하나면 충분하지 않나?
+직관적으로는: utm → base_link 하나면 충분하지 않나?
 
 [실제 이유]
 odom → base_link 는 연속적(제어기용)
-map → odom      는 가끔 점프해서 절대 위치 보정
+utm → odom      는 가끔 점프해서 절대 위치 보정
 
 둘을 분리함으로써, GNSS 보정이 제어기에 직접 전달되는 것을 차단한다.
 ```
 
-**`map → odom` TF의 물리적 의미:**
+**`utm → odom` TF의 물리적 의미:**
 
 ```
-initial:  map → odom = 항등변환
-          (map 원점과 odom 원점이 같은 위치)
+initial:  utm → odom = 항등변환
+          (utm 원점과 odom 원점이 같은 위치)
 
 500m 주행 후 odom이 2m 동쪽으로 드리프트했다면:
   global_ekf가 GNSS로 실제 위치를 파악
-  → map → odom 오프셋을 2m 서쪽으로 조정
+  → utm → odom 오프셋을 2m 서쪽으로 조정
   → odom → base_link 는 그대로 (제어기에 영향 없음)
-  → map → odom → base_link 합산으로 실제 절대 위치 계산
+  → utm → odom → base_link 합산으로 실제 절대 위치 계산
 ```
 
-- **발행 주체:** `global_ekf` (`world_frame: map`, `publish_tf: true`)
+- **발행 주체:** `global_ekf` (`world_frame: utm`, `publish_tf: true`)
 - **계산 방법:** wheel `vx` + IMU `wz` + GNSS UTM `(x,y)` + azimuth yaw의 EKF 융합
 - **장점:** 드리프트가 보정된 절대 위치
-- **단점:** GNSS 업데이트 시 `map → odom` 오프셋이 불연속적으로 변할 수 있다(Jump). 단, 이 Jump는 `odom → base_link`에는 전달되지 않으므로 제어기는 영향을 받지 않는다.
+- **단점:** GNSS 업데이트 시 `utm → odom` 오프셋이 불연속적으로 변할 수 있다(Jump). 단, 이 Jump는 `odom → base_link`에는 전달되지 않으므로 제어기는 영향을 받지 않는다.
 - **사용처:** 전역 경로 추종, MPPI의 global plan frame
 
 ---
 
-### 2.4 `csv` — GNSS 전용 경로 추종 기준점
+### 2.4 `csv_to_utm` — 경로 파일 → utm 프레임 Path 발행
 
-**원점:** CSV 경로 파일의 **첫 번째 UTM 좌표**. EKF 초기화 여부와 무관하게 항상 동일하다.
+`csv_to_utm` 노드(`gnss_to_utm` 패키지)는 CSV 파일의 UTM 절대 좌표를 `utm` 프레임의 상대 좌표로 변환하여 `/csv_path`(`nav_msgs/Path`)로 발행한다. 별도 TF 프레임은 발행하지 않는다.
 
 ```
-경로 파일: route_1.csv
-  첫 번째 행: 355123.45, 4162345.67  ← 이 UTM 좌표가 csv 원점
-  이후 모든 경유점은 이 점에서의 상대 좌표로 변환되어 /csv_path로 발행됨
+변환 규칙 (gnss_to_odom.py와 동일한 datum 사용):
+  local_x =  (utm_x - datum_x)
+  local_y = -(utm_y - datum_y)   ← CARLA +Y=right 보정
 
-차량 위치:
-  f9r 안테나의 현재 UTM - csv 원점 = f9r 프레임의 csv 기준 위치
-  tf_gnss_csv 노드가 csv → f9r TF를 브로드캐스트
+datum 공급 경로:
+  gnss_to_odom.py → /utm_datum (transient_local) → csv_to_utm
+  → 두 노드가 동일한 datum을 공유하므로 /csv_path는 바로 utm 프레임 경로로 사용 가능
 ```
 
-- **발행 주체:** `tf_gnss_csv` 노드 (`gnss_to_utm` 패키지)
-- **계산 방법:** 원시 f9r/f9p GNSS → UTM 변환 → csv 원점 기준 상대 좌표
-- **EKF와의 관계:** 완전히 독립. `map/odom/base_link` TF 트리와 연결되지 않는다.
-- **장점:** EKF 수렴 여부와 무관하고, 경로 파일이 원점이므로 매 실행마다 일관성이 유지된다.
-- **단점:** IMU/wheel 융합이 없는 순수 GNSS 측위이므로 정밀도가 낮고, GNSS 노이즈가 그대로 위치에 반영된다.
-- **사용처:** `dual_filter` 없이 GNSS만으로 경로 추종할 때 (두 스택을 동시에 실행하면 안 됨)
+- **발행 주체:** `csv_to_utm` 노드 (`gnss_to_utm` 패키지)
+- **구독:** `/utm_datum` (`geometry_msgs/PointStamped`, transient_local) — `gnss_to_odom`이 래치한 datum
+- **발행:** `/csv_path` (`nav_msgs/Path`, `frame_id: utm`) — 웨이포인트 pose 목록 (yaw 포함)
+- **EKF와의 관계:** TF 트리에 직접 참여하지 않지만 `/utm_datum`을 통해 dual_filter 스택과 datum을 공유한다.
+- **파라미터:** `csv_file_path` — 절대 경로로 CSV 파일 지정 (`config/csv_to_utm.yaml`)
+- **사용처:** `dual_filter` 스택과 함께 실행하여 `/csv_path`를 경로 추종 입력으로 활용
 
 ---
 
 ### 2.5 프레임 관계 요약
 
 ```
-[dual_filter 스택 — EKF 기반]
+[TF 트리 — dual_filter 스택]
 
   지구상의 절대 위치 (UTM datum 기준)
        │
        ▼
-     map ──────────────────────────────── 전역 고정 좌표계
-       │                                  원점: utm_to_odometry.py의 datum
-       │ map → odom TF                    발행: global_ekf
+     utm ──────────────────────────────── 전역 고정 좌표계
+       │                                  원점: gnss_to_odom.py의 datum
+       │ utm → odom TF                    발행: global_ekf
        │ (GNSS로 드리프트 보정)
        ▼
      odom ─────────────────────────────── 출발점 고정 좌표계
@@ -165,22 +165,17 @@ initial:  map → odom = 항등변환
                                           원점: 후륜축 중심 (차량과 함께 이동)
 
 
-[gnss_to_utm 스택 — GNSS 전용, 별도 독립]
+[경로 파일 — csv_to_utm (TF 트리 외부)]
 
-     csv ──────────────────────────────── 경로 기준 좌표계
-       │                                  원점: CSV 파일 첫 번째 UTM 점
-       │ csv → f9r TF                     발행: tf_gnss_csv
-       │ (raw f9r GNSS 직접 변환)
-       ▼
-     f9r ───────────────────────────────  차량(f9r 안테나) 현재 위치
+  gnss_to_odom → /utm_datum → csv_to_utm → /csv_path (utm frame)
+  (datum 공유로 /csv_path는 별도 TF 없이 utm 프레임 경로로 직접 사용 가능)
 ```
 
 | 프레임 | 원점 | 이동 여부 | 연속성 | 절대 위치 | 발행 주체 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `base_link` | 후륜축 중심 | 차량과 함께 이동 | 연속 | 없음 | local_ekf |
 | `odom` | 시스템 시작 위치 | 고정 | 연속 (드리프트 있음) | 없음 | local_ekf |
-| `map` | datum UTM 좌표 | 고정 | 가끔 보정(Jump 가능) | 있음 | global_ekf |
-| `csv` | CSV 첫 번째 UTM 점 | 고정 | 연속 (GNSS 노이즈 포함) | 있음(상대적) | tf_gnss_csv |
+| `utm` | datum UTM 좌표 | 고정 | 가끔 보정(Jump 가능) | 있음 | global_ekf |
 
 ---
 
@@ -189,7 +184,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 
 | 출처 | CARLA 원본 토픽 | EKF 입력 토픽 | 메시지 타입 | 필수 데이터 필드 |
 | :--- | :--- | :--- | :--- | :--- |
-| **CARLA API 노드** (별도 작성) | — | `/wheel/odom` | `nav_msgs/Odometry` | `twist.twist.linear.x`, `twist.twist.linear.y = 0` |
+| **CARLA API 노드** (별도 작성) | — | `/odometry/wheel` | `nav_msgs/Odometry` | `twist.twist.linear.x`, `twist.twist.linear.y = 0` |
 | **IMU** | `/carla/car/imu/data` | `/imu/data` (리매핑) | `sensor_msgs/Imu` | `angular_velocity.z` |
 | **GNSS (후륜축)** | `/carla/car/f9r/fix` | `/f9r/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
 | **GNSS (전방 1.4m)** | `/carla/car/f9p/fix` | `/f9p/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
@@ -201,15 +196,15 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | 토픽 | 메시지 타입 | 사용하는 필드 | 사용 노드 | 목적 |
 | :--- | :--- | :--- | :--- | :--- |
 | `/clock` | `rosgraph_msgs/Clock` | `clock` | 모든 `use_sim_time:=true` 노드 | CARLA simulation time 기준으로 EKF 적분 시간 통일 |
-| `/wheel/odom` | `nav_msgs/Odometry` | `header.stamp` | local/global EKF | wheel 측정 시각 |
-| `/wheel/odom` | `nav_msgs/Odometry` | `twist.twist.linear.x` | local/global EKF | 차량 전방 속도 `vx` |
-| `/wheel/odom` | `nav_msgs/Odometry` | `twist.twist.linear.y = 0` | local/global EKF | 비홀로노믹 제약, 옆미끄럼 없음 `vy=0` |
+| `/odometry/wheel` | `nav_msgs/Odometry` | `header.stamp` | local/global EKF | wheel 측정 시각 |
+| `/odometry/wheel` | `nav_msgs/Odometry` | `twist.twist.linear.x` | local/global EKF | 차량 전방 속도 `vx` |
+| `/odometry/wheel` | `nav_msgs/Odometry` | `twist.twist.linear.y = 0` | local/global EKF | 비홀로노믹 제약, 옆미끄럼 없음 `vy=0` |
 | `/carla/car/imu/data` | `sensor_msgs/Imu` | `header.stamp` | local/global EKF | IMU 측정 시각 |
 | `/carla/car/imu/data` | `sensor_msgs/Imu` | `angular_velocity.z` | local/global EKF | yaw rate `wz` |
 | `/carla/car/f9r/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9r_to_utm`, `azimuth_angle_calculator` | 후륜축 GNSS 위치와 heading 기준점 |
 | `/carla/car/f9p/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9p_to_utm`, `azimuth_angle_calculator` | 전방 GNSS 위치와 heading 벡터 끝점 |
-| `/f9r_utm` | `geometry_msgs/PointStamped` | `header.stamp`, `point.x`, `point.y`, `point.z` | `utm_to_odometry` | f9r UTM 위치 |
-| `/azimuth_angle` | `std_msgs/Float64` | `data` | `utm_to_odometry` | f9r→f9p geographic bearing |
+| `/f9r_utm` | `geometry_msgs/PointStamped` | `header.stamp`, `point.x`, `point.y`, `point.z` | `gnss_to_odom` | f9r UTM 위치 |
+| `/azimuth_angle` | `std_msgs/Float64` | `data` | `gnss_to_odom` | f9r→f9p geographic bearing |
 | `/odometry/gnss` | `nav_msgs/Odometry` | `pose.pose.position.x`, `pose.pose.position.y`, `pose.pose.orientation` | global EKF | 절대 위치와 절대 yaw 보정 |
 
 `robot_localization`의 `*_config` 배열 순서는 다음과 같다.
@@ -218,7 +213,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
 ```
 
-따라서 `/wheel/odom`에서 `vx`, `vy`만 사용한다는 것은 7번째와 8번째 항목이 `true`라는 뜻이고, `/imu/data`에서 `angular_velocity.z`만 사용한다는 것은 `vyaw` 항목만 `true`라는 뜻이다.
+따라서 `/odometry/wheel`에서 `vx`, `vy`만 사용한다는 것은 7번째와 8번째 항목이 `true`라는 뜻이고, `/imu/data`에서 `angular_velocity.z`만 사용한다는 것은 `vyaw` 항목만 `true`라는 뜻이다.
 
 ---
 
@@ -237,12 +232,13 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | `f9r_to_utm` | `/f9r_utm` | `geometry_msgs/PointStamped` | f9r의 UTM 좌표 (easting, northing) |
 | `f9p_to_utm` | `/f9p_utm` | `geometry_msgs/PointStamped` | f9p의 UTM 좌표 (easting, northing) |
 | `azimuth_angle_calculator` | `/azimuth_angle` | `std_msgs/Float64` | f9p − f9r 차분으로 계산된 차량 헤딩(**도°**, geographic N=0 CW+) |
-| `utm_to_odometry` | `/odometry/gnss` | `nav_msgs/Odometry` | 글로벌 EKF 입력용 — f9r UTM 위치 + azimuth yaw를 단일 Odometry로 합성 |
+| `gnss_to_odom` | `/odometry/gnss` | `nav_msgs/Odometry` | 글로벌 EKF 입력용 — f9r UTM 위치 + azimuth yaw를 단일 Odometry로 합성 |
+| `gnss_to_odom` | `/utm_datum` | `geometry_msgs/PointStamped` | 최초 f9r GNSS 수신 시의 UTM easting/northing을 datum으로 래치 (QoS: transient_local) → `csv_to_utm`이 구독하여 경로 좌표 변환에 사용 |
 
 > **토픽 리매핑:** launch 파일에서 CARLA 토픽명 → gnss_to_utm 내부 토픽명으로 리매핑.
 > `/f9r/fix` ← `/carla/car/f9r/fix`, `/f9p/fix` ← `/carla/car/f9p/fix`
 >
-> **`utm_to_odometry` 구현:** `/f9r_utm` (PointStamped)와 `/azimuth_angle` (Float64, 도°)를 구독.
+> **`gnss_to_odom` 구현:** `/f9r_utm` (PointStamped)와 `/azimuth_angle` (Float64, 도°)를 구독.
 > `azimuth_angle_calculator`가 발행하는 값은 **geographic bearing (N=0, CW+, 도°)** 이므로, 먼저 **ENU yaw (E=0, CCW+, rad)** 로 변환한 뒤 CARLA의 `+Y=right` 좌표계를 ROS `+Y=left` 좌표계에 맞추기 위해 Y축과 yaw 부호를 반전한다.
 >
 > ```text
@@ -257,7 +253,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 ### Node 2: 로컬 필터 (`ekf_node` - Local)
 
 *   **목적:** 차량의 제어기(MPPI)에 넣을 **지연 없고 연속적인 short-term 오도메트리** 생성.
-*   **입력:** `/wheel/odom`, `/imu/data`
+*   **입력:** `/odometry/wheel`, `/imu/data`
 *   **출력:** `/odometry/local` 토픽, `odom` $\rightarrow$ `base_link` TF 발행
 *   **좌표계 역할:** `odom` 프레임 안에서 `base_link`가 얼마나 부드럽게 움직였는지를 표현한다. 전역 절대 위치가 아니라, 출발 이후의 상대 이동량을 누적한 로컬 추정값이다.
 
@@ -265,13 +261,13 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 
 | 입력 토픽 | 사용하는 필드 | EKF config 항목 | 역할 |
 | :--- | :--- | :--- | :--- |
-| `/wheel/odom` | `header.stamp` | — | wheel 속도 측정 시각. 반드시 CARLA simulation time이어야 함 |
-| `/wheel/odom` | `twist.twist.linear.x` | `vx` | 차량 전방 속도. 로컬 위치 적분의 주 이동량 |
-| `/wheel/odom` | `twist.twist.linear.y = 0` | `vy` | 차량은 옆으로 미끄러지지 않는다는 비홀로노믹 제약 |
+| `/odometry/wheel` | `header.stamp` | — | wheel 속도 측정 시각. 반드시 CARLA simulation time이어야 함 |
+| `/odometry/wheel` | `twist.twist.linear.x` | `vx` | 차량 전방 속도. 로컬 위치 적분의 주 이동량 |
+| `/odometry/wheel` | `twist.twist.linear.y = 0` | `vy` | 차량은 옆으로 미끄러지지 않는다는 비홀로노믹 제약 |
 | `/carla/car/imu/data` → `/imu/data` | `header.stamp` | — | IMU 측정 시각. wheel odom과 같은 `/clock` 기준이어야 함 |
 | `/carla/car/imu/data` → `/imu/data` | `angular_velocity.z` | `vyaw` | 차량의 상대 yaw rate. 회전 적분의 유일한 각속도 입력 |
 
-`/wheel/odom`의 pose, `/wheel/odom.twist.twist.angular.z`, IMU orientation, IMU linear acceleration은 로컬 EKF에서 사용하지 않는다. 로컬 회전량은 오직 `/imu/data.angular_velocity.z`에서 오며, 선속도는 오직 `/wheel/odom.twist.twist.linear.x`와 `linear.y=0` 제약에서 온다.
+`/odometry/wheel`의 pose, `/odometry/wheel.twist.twist.angular.z`, IMU orientation, IMU linear acceleration은 로컬 EKF에서 사용하지 않는다. 로컬 회전량은 오직 `/imu/data.angular_velocity.z`에서 오며, 선속도는 오직 `/odometry/wheel.twist.twist.linear.x`와 `linear.y=0` 제약에서 온다.
 
 #### EKF 파라미터의 의미
 
@@ -284,7 +280,7 @@ local_ekf:
     world_frame: odom
     publish_tf: true
 
-    odom0: /wheel/odom
+    odom0: /odometry/wheel
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -299,7 +295,7 @@ local_ekf:
                   false, false, false]
 ```
 
-`odom0_config`에서 `vx`, `vy`만 `true`이므로 `/wheel/odom`은 위치가 아니라 속도 측정으로만 쓰인다. `imu0_config`에서 `vyaw`만 `true`이므로 IMU는 yaw rate 측정으로만 쓰인다. `world_frame: odom`과 `publish_tf: true` 때문에 로컬 EKF는 `/odometry/local`과 함께 `odom → base_link` TF를 발행한다.
+`odom0_config`에서 `vx`, `vy`만 `true`이므로 `/odometry/wheel`은 위치가 아니라 속도 측정으로만 쓰인다. `imu0_config`에서 `vyaw`만 `true`이므로 IMU는 yaw rate 측정으로만 쓰인다. `world_frame: odom`과 `publish_tf: true` 때문에 로컬 EKF는 `/odometry/local`과 함께 `odom → base_link` TF를 발행한다.
 
 #### 로컬 EKF가 계산하는 움직임
 
@@ -312,6 +308,62 @@ local_ekf:
 ```
 
 즉 차량은 현재 바라보는 방향으로 `vx`만큼 전진하고, IMU의 `wz`만큼 회전한다고 가정한다. 이 추정은 짧은 시간에는 매우 부드럽고 제어에 적합하지만, GNSS 보정이 없으므로 장시간 운행하면 위치와 yaw가 조금씩 드리프트한다.
+
+#### 왜 단순 적분(dead-reckoning) 대신 EKF를 사용하는가
+
+로컬 EKF가 하는 핵심 연산은 사실상 dead-reckoning 적분이다. 가장 단순한 형태로 표현하면 다음과 같다.
+
+```text
+naive dead-reckoning (단순 적분):
+  yaw  += wz  × dt
+  x    += vx × cos(yaw) × dt
+  y    += vx × sin(yaw) × dt
+```
+
+EKF의 Prediction step도 내부적으로 이 적분을 수행한다. 그렇다면 왜 단순 적분 대신 EKF를 쓰는가?
+
+##### 이유 1 — 센서 주기가 다르다 (비동기 처리)
+
+```text
+IMU:           100Hz → wz 측정값 도착
+wheel encoder:  10Hz → vx 측정값 도착
+
+타임라인:
+  t=0ms:   IMU wz만 도착  (vx 없음)
+  t=10ms:  IMU wz만 도착
+  ...
+  t=100ms: wheel vx + IMU wz 동시 도착
+  t=110ms: IMU wz만 도착  (이때 vx는 무엇을 써야 하는가?)
+```
+
+단순 concatenate는 두 센서 값이 동시에 있을 때만 동작한다는 암묵적 가정이 있다. EKF는 Prediction/Correction 단계를 분리하여, 각 센서가 도착할 때마다 독립적으로 처리한다. 센서가 없는 구간에서는 마지막 추정값으로 상태 예측을 유지한다.
+
+##### 이유 2 — vy=0 비홀로노믹 제약을 소프트하게 적용할 수 있다
+
+차량은 옆으로 미끄러지지 않는다. 이 제약을 단순 적분에 넣으면 그냥 y 방향 적분을 생략하는 것이 된다. EKF에서는 `vy = 0`을 신뢰도가 높은 가짜 측정값(covariance=0.01)으로 매 주기 주입하여, 횡방향 드리프트가 생길 때 EKF가 이를 보정한다.
+
+```text
+단순 적분: vy를 무시 → 횡방향 오차가 조용히 누적될 수 있음
+EKF:       vy=0을 측정값으로 주입 → 횡방향 상태가 능동적으로 보정됨
+```
+
+##### 이유 3 — 노이즈 가중치를 수치화한다
+
+wheel encoder는 저속에서 양자화 노이즈가 크고, IMU 자이로는 온도·진동 drift가 있다. 단순 적분은 두 센서를 동등하게 신뢰한다. EKF는 공분산 행렬로 각 센서의 신뢰도를 수치화하여, 노이즈가 큰 측정값일수록 Kalman Gain을 줄여 덜 반영한다.
+
+##### 요약
+
+```text
+dead-reckoning (단순 적분) ⊂ EKF의 Prediction step
+
+EKF = dead-reckoning (Prediction)
+    + 비동기 다중 센서 지원    ← 가장 실용적인 이유
+    + vy=0 비홀로노믹 제약     ← 두 번째 실용적인 이유
+    + 노이즈 가중치 (Kalman Gain)
+    + 상태 불확실성 추적 (공분산 행렬) ← global_ekf와 연동 시 필요
+```
+
+만약 두 센서가 동일 주기이고 노이즈가 적다면 단순 적분으로도 동작할 수 있다. 실제 하드웨어에서는 IMU(100Hz)와 wheel encoder(10Hz)의 비동기 타이밍, 그리고 vy=0 제약을 올바르게 처리하기 위해 EKF를 사용한다.
 
 #### GNSS를 로컬 EKF에 넣지 않는 이유
 
@@ -327,7 +379,7 @@ GNSS 위치가 순간적으로 1m 튐
 → 조향/가감속 명령이 튀거나 발산
 ```
 
-따라서 로컬 EKF는 GNSS를 쓰지 않고 wheel+IMU만 적분한다. GNSS로 누적 드리프트를 보정하는 일은 global EKF가 `map → odom` TF를 조정하는 방식으로 담당한다.
+따라서 로컬 EKF는 GNSS를 쓰지 않고 wheel+IMU만 적분한다. GNSS로 누적 드리프트를 보정하는 일은 global EKF가 `utm → odom` TF를 조정하는 방식으로 담당한다.
 
 #### 왜 `odom → base_link` TF를 발행하는가
 
@@ -338,7 +390,7 @@ GNSS 위치가 순간적으로 1m 튐
 ```
 
 *   이 TF는 GNSS 보정이 없으므로 **연속적이고 부드러움** → 제어기가 안정적으로 동작.
-*   단점: GNSS 없이 적분만 하므로 장시간 운행 시 오차 누적(드리프트) → **글로벌 필터가 `map → odom`으로 보정.**
+*   단점: GNSS 없이 적분만 하므로 장시간 운행 시 오차 누적(드리프트) → **글로벌 필터가 `utm → odom`으로 보정.**
 
 #### 로컬 EKF에서 특히 조심해야 하는 오류
 
@@ -346,14 +398,14 @@ GNSS 위치가 순간적으로 1m 튐
 | :--- | :--- | :--- |
 | `/clock` 미사용 또는 stamp 불일치 | 90도 회전이 유턴처럼 과적분됨 | 속도는 simulation second 기준인데 EKF 적분 `dt`가 wall time으로 계산됨 |
 | CARLA/ROS yaw 부호 불일치 | 좌회전/우회전 방향이 뒤집힘 | CARLA `+Y=right`, ROS `+Y=left` 미러링 누락 |
-| `/wheel/odom.angular.z`와 IMU `angular_velocity.z` 동시 사용 | 회전량이 과하게 들어감 | yaw rate를 두 센서에서 중복 융합 |
+| `/odometry/wheel.angular.z`와 IMU `angular_velocity.z` 동시 사용 | 회전량이 과하게 들어감 | yaw rate를 두 센서에서 중복 융합 |
 | `vy=0` 제약 미사용 | 코너에서 옆으로 미끄러지는 궤적 | 차량 비홀로노믹 특성이 EKF에 반영되지 않음 |
 
 ### Node 3: 글로벌 필터 (`ekf_node` - Global)
 
 *   **목적:** GNSS 절대 위치로 로컬 필터의 장기 드리프트를 보정하고, 맵 상의 절대 위치를 파악.
-*   **입력:** `/wheel/odom`, `/imu/data`, `/odometry/gnss` (Node 1 출력 — UTM 위치 + azimuth yaw)
-*   **출력:** `/odometry/global` 토픽, `map` $\rightarrow$ `odom` TF 발행
+*   **입력:** `/odometry/wheel`, `/imu/data`, `/odometry/gnss` (Node 1 출력 — UTM 위치 + azimuth yaw)
+*   **출력:** `/odometry/global` 토픽, `utm` $\rightarrow$ `odom` TF 발행
 
 #### 글로벌 EKF — 각 입력이 필요한 이유 (예측/보정 단계)
 
@@ -361,7 +413,7 @@ EKF는 **예측(Prediction)** + **보정(Correction)** 2단계로 동작한다.
 
 | 입력 | 단계 | 역할 | 없으면? |
 | :--- | :--- | :--- | :--- |
-| `/wheel/odom(vx, vy=0)` + `/imu/data(wz)` | 예측 | GNSS 업데이트(30Hz) 사이 구간에서 차량 이동을 물리 모델로 추정 | GNSS가 없는 구간(1/30초)마다 위치를 전혀 모름 |
+| `/odometry/wheel(vx, vy=0)` + `/imu/data(wz)` | 예측 | GNSS 업데이트(30Hz) 사이 구간에서 차량 이동을 물리 모델로 추정 | GNSS가 없는 구간(1/30초)마다 위치를 전혀 모름 |
 | `/odometry/gnss` (UTM x, y) | 보정 | 절대 위치로 누적된 드리프트를 보정 | 예측만 하고 보정이 없으므로 로컬 EKF와 동일하게 드리프트 누적 |
 | `/odometry/gnss` (azimuth yaw) | 보정 | 절대 헤딩으로 방향 드리프트를 보정 | 위치는 보정되지만 헤딩 오차가 남아, GNSS 업데이트마다 필터가 진동 |
 
@@ -386,7 +438,7 @@ odom1_config: [true,  true,  false,
 /azimuth_angle
   geographic bearing, degree, north=0, clockwise+
 
-→ utm_to_odometry
+→ gnss_to_odom
   yaw_enu = π/2 − bearing
   yaw_ros = −yaw_enu
   quaternion(qz, qw)
@@ -395,7 +447,7 @@ odom1_config: [true,  true,  false,
   robot_localization이 quaternion에서 yaw 추출
 ```
 
-global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해서다. `/wheel/odom(vx, vy=0)`와 `/imu/data(wz)`만 있으면 global EKF도 local EKF처럼 상대 적분만 수행한다. 위치 x, y를 GNSS로 보정하더라도 yaw가 틀어져 있으면 다음 예측 단계에서 진행 방향이 잘못되어 위치 보정과 예측이 서로 싸우게 된다. 특히 코너 구간에서는 GNSS 위치 업데이트마다 경로가 흔들리거나, `map→odom` 보정이 불안정해질 수 있다. dual GNSS yaw를 함께 넣으면 위치와 방향이 같은 절대 좌표계에서 동시에 보정된다.
+global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해서다. `/odometry/wheel(vx, vy=0)`와 `/imu/data(wz)`만 있으면 global EKF도 local EKF처럼 상대 적분만 수행한다. 위치 x, y를 GNSS로 보정하더라도 yaw가 틀어져 있으면 다음 예측 단계에서 진행 방향이 잘못되어 위치 보정과 예측이 서로 싸우게 된다. 특히 코너 구간에서는 GNSS 위치 업데이트마다 경로가 흔들리거나, `utm→odom` 보정이 불안정해질 수 있다. dual GNSS yaw를 함께 넣으면 위치와 방향이 같은 절대 좌표계에서 동시에 보정된다.
 
 #### `/azimuth_angle`을 `pose.pose.orientation` yaw 대신 직접 쓸 수 있는가
 
@@ -408,21 +460,21 @@ global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해�
 | `sensor_msgs/Imu` orientation | `orientation` quaternion | IMU orientation처럼 보이므로 dual GNSS heading 의미가 흐려질 수 있음 |
 | `std_msgs/Float64` | scalar degree/radian | `robot_localization` 입력으로 직접 사용 불가 |
 
-따라서 `/azimuth_angle`을 "대체"하려면 raw Float64를 그대로 넣는 것이 아니라, 별도 브리지 노드에서 quaternion orientation과 covariance를 가진 `Odometry` 또는 `PoseWithCovarianceStamped`로 변환해야 한다. 현재 `utm_to_odometry.py`가 이미 이 역할을 수행한다.
+따라서 `/azimuth_angle`을 "대체"하려면 raw Float64를 그대로 넣는 것이 아니라, 별도 브리지 노드에서 quaternion orientation과 covariance를 가진 `Odometry` 또는 `PoseWithCovarianceStamped`로 변환해야 한다. 현재 `gnss_to_odom.py`가 이미 이 역할을 수행한다.
 
 둘 중 무엇이 더 좋은가? 현재 구조에서는 **`/azimuth_angle`을 `/odometry/gnss.pose.pose.orientation` quaternion으로 변환해서 global EKF에 넣는 방식이 더 좋다.** 이유는 다음과 같다.
 
 | 비교 항목 | `/azimuth_angle` 직접 사용 | `/odometry/gnss.pose.pose.orientation` 사용 |
 | :--- | :--- | :--- |
 | `robot_localization` 호환성 | 직접 입력 불가 | 바로 입력 가능 |
-| 좌표계 변환 | EKF 밖에서 따로 처리 필요 | `utm_to_odometry.py`에서 일관 처리 |
+| 좌표계 변환 | EKF 밖에서 따로 처리 필요 | `gnss_to_odom.py`에서 일관 처리 |
 | 단위 | degree, N=0, CW+ | quaternion, ROS yaw 기준 |
 | covariance | Float64에 없음 | `pose.covariance[35]`로 yaw 신뢰도 지정 가능 |
 | position과 heading 동기화 | 별도 관리 필요 | 하나의 `/odometry/gnss` 메시지로 함께 전달 |
 
 즉 `/azimuth_angle`은 좋은 원천 데이터이고, global EKF에는 그것을 ROS 좌표계 quaternion yaw로 변환한 `/odometry/gnss.pose.pose.orientation`을 넣는 것이 정답에 가깝다.
 
-#### 왜 `odom → base_link` 대신 `map → odom` TF를 발행하는가
+#### 왜 `odom → base_link` 대신 `utm → odom` TF를 발행하는가
 
 이것이 듀얼 필터 아키텍처의 핵심이다. 두 가지 이유가 있다.
 
@@ -440,26 +492,26 @@ GNSS 노이즈로 위치가 1m 튐
 → 차량 발산
 ```
 
-`map → odom` 오프셋을 조정하면:
+`utm → odom` 오프셋을 조정하면:
 
 ```text
 GNSS 보정 발생
-→ map → odom 오프셋만 조용히 변경됨
+→ utm → odom 오프셋만 조용히 변경됨
 → odom → base_link는 전혀 변하지 않음 (로컬 EKF가 계속 부드럽게 발행 중)
 → MPPI는 아무것도 감지하지 못함 → 안정적 제어
-→ 전역 경로 추종 노드만 map → base_link를 새로 계산하여 장거리 오차 보정
+→ 전역 경로 추종 노드만 utm → base_link를 새로 계산하여 장거리 오차 보정
 ```
 
 **전체 TF 관계 요약:**
 
 ```text
-map ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
+utm ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
      (절대 위치 오프셋)       (부드러운 이동)
 
-map → base_link = (map→odom) + (odom→base_link)
+utm → base_link = (utm→odom) + (odom→base_link)
                    ^글로벌EKF    ^로컬EKF
 
-전역 경로 추종: map → base_link 사용 (절대 위치 기반)
+전역 경로 추종: utm → base_link 사용 (절대 위치 기반)
 로컬 제어기:   odom → base_link 사용 (부드러운 이동 기반)
 ```
 
@@ -476,13 +528,13 @@ local_ekf:
     two_d_mode: true               # 평면 주행(2D) 강제 적용
     publish_tf: true               # odom -> base_link TF 발행 활성화
     
-    map_frame: map
+    map_frame: utm
     odom_frame: odom
     base_link_frame: base_link
     world_frame: odom              # 기준 프레임을 odom으로 설정
 
     # Wheel Encoder 설정 (X축 선속도 + Y축 비홀로노믹 제약 vy=0)
-    odom0: /wheel/odom
+    odom0: /odometry/wheel
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -511,14 +563,14 @@ global_ekf:
     use_sim_time: true              # /clock(CARLA simulation time) 사용
     frequency: 30.0
     two_d_mode: true
-    publish_tf: true               # map -> odom TF 발행 활성화
+    publish_tf: true               # utm -> odom TF 발행 활성화
     
-    map_frame: map
+    map_frame: utm
     odom_frame: odom
     base_link_frame: base_link
-    world_frame: map               # 기준 프레임을 map으로 설정
+    world_frame: utm               # 기준 프레임을 utm으로 설정
 
-    odom0: /wheel/odom
+    odom0: /odometry/wheel
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -566,15 +618,23 @@ global_ekf:
 ```text
 mppi/
 ├── src/
-│   ├── gnss_to_utm/             ← mppi 내부 독립 소스 패키지
-│   │                                (f9r_to_utm, f9p_to_utm, azimuth_angle_calculator_node)
-│   └── dual_filter/
-│       ├── package.xml             ament_python 패키지 메타데이터
+│   ├── gnss_to_utm/             ← ament_cmake C++ 패키지
+│   │   ├── src/
+│   │   │   ├── f9r_to_utm.cpp           ← NavSatFix → /f9r_utm (PointStamped)
+│   │   │   ├── f9p_to_utm.cpp           ← NavSatFix → /f9p_utm (PointStamped)
+│   │   │   ├── azimuth_angle_calculator.cpp ← dual GNSS → /azimuth_angle (Float64)
+│   │   │   ├── csv_to_utm.cpp           ← /utm_datum → /csv_path (Path, utm frame)
+│   │   │   └── f9r_to_csv.py            ← 오프라인 도구: rosbag → UTM CSV 변환
+│   │   ├── config/csv_to_utm.yaml       ← csv_file_path 파라미터
+│   │   └── launch/csv_to_utm.launch.py
+│   └── dual_filter/             ← ament_python 패키지
+│       ├── package.xml
 │       ├── setup.py / setup.cfg
 │       ├── dual_filter/
-│       │   └── utm_to_odometry.py  ← Node 1d: 브리지 노드 (구현 완료)
+│       │   ├── gnss_to_odom.py   ← Node 1d: /f9r_utm + /azimuth_angle → /odometry/gnss + /utm_datum
+│       │   └── path_visualizer.py ← Odometry → Path 누적 발행 (3개 인스턴스)
 │       ├── config/
-│       │   └── ekf_params.yaml     ← Section 5 파라미터 (local_ekf + global_ekf)
+│       │   └── ekf_params.yaml      ← Section 5 파라미터 (local_ekf + global_ekf)
 │       └── launch/
 │           └── dual_filter.launch.py ← 전체 시스템 런치 파일
 ├── build/
@@ -582,19 +642,21 @@ mppi/
 └── log/
 ```
 
-### 6.2 `utm_to_odometry` 노드
+### 6.2 `gnss_to_odom` 노드
 
-파일: `dual_filter/dual_filter/utm_to_odometry.py`
+파일: `dual_filter/dual_filter/gnss_to_odom.py`
 
-* **역할:** Node 1의 최종 브리지 — UTM 위치와 방위각을 하나의 `nav_msgs/Odometry`로 묶어 글로벌 EKF에 전달.
+* **역할:** Node 1의 최종 브리지 — UTM 위치와 방위각을 하나의 `nav_msgs/Odometry`로 묶어 글로벌 EKF에 전달. 최초 수신 시 datum을 래치하여 `/utm_datum`으로 발행.
 * **구독:**
   * `/f9r_utm` (`geometry_msgs/PointStamped`) — f9r의 UTM easting/northing
   * `/azimuth_angle` (`std_msgs/Float64`) — geographic bearing, **도°**, N=0 CW+
-* **발행:** `/odometry/gnss` (`nav_msgs/Odometry`)
-  * `header.frame_id = "map"`, `child_frame_id = "base_link"`
-  * `pose.pose.position.x` = `easting - datum_easting`
-  * `pose.pose.position.y` = `-(northing - datum_northing)` — CARLA `+Y=right`를 ROS `+Y=left`로 미러링
-  * `pose.pose.orientation` = azimuth → ENU yaw 변환 → yaw 부호 반전 후 쿼터니언
+* **발행:**
+  * `/odometry/gnss` (`nav_msgs/Odometry`) — 글로벌 EKF 입력
+    * `header.frame_id = "utm"`, `child_frame_id = "base_link"`
+    * `pose.pose.position.x` = `easting - datum_easting`
+    * `pose.pose.position.y` = `-(northing - datum_northing)` — CARLA `+Y=right`를 ROS `+Y=left`로 미러링
+    * `pose.pose.orientation` = azimuth → ENU yaw 변환 → yaw 부호 반전 후 쿼터니언
+  * `/utm_datum` (`geometry_msgs/PointStamped`, transient_local) — 최초 UTM fix를 datum으로 래치 → `csv_to_utm`과 공유
 * **공분산 설정 (robot_localization 가중치 제어):**
 
 | 요소 | 인덱스 (6×6 행렬) | 설정값 | 근거 |
@@ -608,7 +670,7 @@ mppi/
 
 파일: `PythonAPI/examples/ros2_sensor/ros2_sensor.py`
 
-이 노드는 CARLA 센서 데이터를 ROS 2 토픽으로 발행하고, EKF 입력에 필요한 `/wheel/odom`과 `/clock`도 함께 만든다.
+이 노드는 CARLA 센서 데이터를 ROS 2 토픽으로 발행하고, EKF 입력에 필요한 `/odometry/wheel`과 `/clock`도 함께 만든다.
 
 #### `/clock`
 
@@ -621,7 +683,7 @@ mppi/
 
 CARLA synchronous/passive 환경에서는 simulation time과 wall time이 다를 수 있다. 이때 속도는 simulation second 기준인데 EKF가 wall time으로 적분하면 회전과 이동량이 과적분된다. 따라서 `/clock`을 발행하고 EKF, path publisher, RViz를 `use_sim_time:=true`로 실행한다.
 
-#### `/wheel/odom`
+#### `/odometry/wheel`
 
 | 필드 | 값 | EKF 사용 여부 |
 | :--- | :--- | :--- |
@@ -632,7 +694,7 @@ CARLA synchronous/passive 환경에서는 simulation time과 wall time이 다를
 | `twist.twist.linear.y` | `0.0` | 사용, 비홀로노믹 제약 |
 | `twist.twist.angular.z` | 발행하지 않음 | 사용 안 함 |
 
-`twist.covariance[0] = 0.05`로 `vx` 신뢰도를 지정하고, `twist.covariance[7] = 0.01`로 `vy=0` 제약을 비교적 강하게 준다. yaw-rate는 IMU에서만 사용하므로 `/wheel/odom`의 angular 축 covariance는 크게 둔다.
+`twist.covariance[0] = 0.05`로 `vx` 신뢰도를 지정하고, `twist.covariance[7] = 0.01`로 `vy=0` 제약을 비교적 강하게 준다. yaw-rate는 IMU에서만 사용하므로 `/odometry/wheel`의 angular 축 covariance는 크게 둔다.
 
 #### `/carla/car/imu/data`
 
@@ -659,20 +721,20 @@ CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=u
 | `local_ekf` | `odometry/filtered` | `/odometry/local` | `remappings=` |
 | `global_ekf` | `odometry/filtered` | `/odometry/global` | `remappings=` |
 
-> **`/wheel/odom`** 은 `ros2_sensor.py`가 직접 `/wheel/odom`으로 발행하므로 리매핑 불필요.
+> **`/odometry/wheel`** 은 `ros2_sensor.py`가 직접 `/odometry/wheel`으로 발행하므로 리매핑 불필요.
 > 이 토픽은 **전진 선속도 + 비홀로노믹 제약 입력**으로 사용한다. `twist.twist.angular.z`는 `/imu/data.angular_velocity.z`와 중복되므로 EKF에서 사용하지 않으며, `ros2_sensor.py`에서도 yaw-rate covariance를 크게 설정해 회전 입력으로 선택되지 않게 한다.
 > `header.stamp`는 ROS wall time이 아니라 CARLA simulation timestamp를 사용한다. `/imu/data`, `/odometry/gnss`도 같은 시간 기준을 사용해야 local/global EKF가 속도를 올바른 시간 간격으로 적분한다.
 > 따라서 `ros2_sensor.py`는 `/clock`을 발행하고, dual filter launch의 모든 노드는 `use_sim_time:=true`로 실행한다.
 
 ### 6.5 Path 출력
 
-`odom_path_publisher`는 Odometry 메시지를 누적하여 RViz용 `nav_msgs/Path`를 발행한다.
+`path_visualizer`는 Odometry 메시지를 누적하여 RViz용 `nav_msgs/Path`를 발행한다.
 
 | 출력 Path | 입력 Odometry | Path frame | 의미 |
 | :--- | :--- | :--- | :--- |
 | `/path/odom` | `/odometry/local` | `odom` | GNSS 없이 wheel+IMU만 적분한 부드러운 odom-frame dead-reckoning 궤적 |
-| `/path/gnss` | `/odometry/gnss` | `map` | EKF를 거치지 않은 GNSS 위치와 dual GNSS yaw 기반 절대 궤적 |
-| `/path/global_ekf` | `/odometry/global` | `map` | wheel+IMU+GNSS를 융합한 global EKF 추정 궤적 |
+| `/path/gnss` | `/odometry/gnss` | `utm` | EKF를 거치지 않은 GNSS 위치와 dual GNSS yaw 기반 절대 궤적 |
+| `/path/global_ekf` | `/odometry/global` | `utm` | wheel+IMU+GNSS를 융합한 global EKF 추정 궤적 |
 
 세 Path의 이름은 의미를 분리하기 위해 명확하게 둔다.
 
@@ -682,7 +744,7 @@ CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=u
 | GNSS Path | `/path/gnss` | dual GNSS 기반 절대 궤적 |
 | Global EKF Path | `/path/global_ekf` | global EKF 융합 결과 |
 
-`/path/odom`은 제어 안정성 확인용이고, `/path/gnss`는 GNSS 변환 결과가 CARLA 주행 궤적과 맞는지 확인하는 전역 기준 궤적이다. `/path/global_ekf`는 global EKF가 GNSS 원천 궤적을 얼마나 부드럽게 따라가며 `map→odom` 보정을 만드는지 확인하는 용도이다. RViz는 `use_sim_time:=true`로 실행해야 Path와 TF가 같은 시간축에서 표시된다.
+`/path/odom`은 제어 안정성 확인용이고, `/path/gnss`는 GNSS 변환 결과가 CARLA 주행 궤적과 맞는지 확인하는 전역 기준 궤적이다. `/path/global_ekf`는 global EKF가 GNSS 원천 궤적을 얼마나 부드럽게 따라가며 `utm→odom` 보정을 만드는지 확인하는 용도이다. RViz는 `use_sim_time:=true`로 실행해야 Path와 TF가 같은 시간축에서 표시된다.
 
 ---
 
@@ -728,7 +790,7 @@ python PythonAPI/examples/manual_control.py \
   --sync
 ```
 
-#### 터미널 3 — ROS2 센서 브리지 (`/wheel/odom` 포함)
+#### 터미널 3 — ROS2 센서 브리지 (`/odometry/wheel` 포함)
 
 ```bash
 cd ~/carla
@@ -811,22 +873,22 @@ ros2 param get /local_ekf use_sim_time
 ros2 param get /global_ekf use_sim_time
 
 # 주요 입력 stamp가 /clock과 같은 CARLA simulation time인지 확인
-ros2 topic echo --once /wheel/odom --field header.stamp
+ros2 topic echo --once /odometry/wheel --field header.stamp
 ros2 topic echo --once /carla/car/imu/data --field header.stamp
 ros2 topic echo --once /odometry/local --field header.stamp
 ros2 topic echo --once /odometry/global --field header.stamp
 
-# TF 트리 확인 (map → odom → base_link 구조인지 확인)
+# TF 트리 확인 (utm → odom → base_link 구조인지 확인)
 ros2 run tf2_tools view_frames
 
 # wheel/IMU 입력 성분 확인
-ros2 topic echo --once /wheel/odom --field twist.twist.linear
+ros2 topic echo --once /odometry/wheel --field twist.twist.linear
 ros2 topic echo --once /carla/car/imu/data --field angular_velocity
 
 # 로컬 EKF 출력 확인 (MPPI 제어 입력용 — GNSS jump 없이 부드러움)
 ros2 topic echo /odometry/local
 
-# 글로벌 EKF 출력 확인 (map → odom 보정용)
+# 글로벌 EKF 출력 확인 (utm → odom 보정용)
 ros2 topic echo /odometry/global
 
 # GNSS 브리지 출력 확인 (/path/gnss의 원천: UTM 좌표 + azimuth yaw)
@@ -837,34 +899,34 @@ ros2 topic echo /odometry/gnss
 
 ```text
 CARLA Simulator
-  ├─ sim time ─────────────→ ros2_sensor.py ──→ /clock ──→ use_sim_time nodes
+  ├─ sim time ──────────────→ ros2_sensor.py ──→ /clock ──→ use_sim_time nodes
   │
-  ├─ /carla/car/imu/data  ──────────────────────────────────────────────┐
-  │                                                                     │
-  ├─ /carla/car/f9r/fix ──→ f9r_to_utm ──→ /f9r_utm ──┐                 │
-  │                     └──→ azimuth_calc ──→ /azimuth_angle ──┐        │
-  │                                                             │       │
-  ├─ /carla/car/f9p/fix ──→ f9p_to_utm ──→ /f9p_utm            │        │
-  │                                                             ▼       │
-  └─ ros2_sensor.py ──→ /wheel/odom ──────────── utm_to_odometry        │
-                              │                       │                 │
-                              │                       ▼                 │
-                              │                 /odometry/gnss           │
-                              │                       │                 │
-                              ├───────────────────────┼─────────────────┤
-                              │                       │                 │
-                              ▼                       ▼                 ▼
-                         local_ekf ◄──── /wheel/odom(vx, vy=0) + /imu/data(wz)
-                         global_ekf ◄─── /wheel/odom(vx, vy=0) + /imu/data(wz) + /odometry/gnss
+  ├─ /carla/car/f9r/fix ──→ f9r_to_utm ──────────→ /f9r_utm ──────────┐
+  │                     └──→ azimuth_calc ─────────→ /azimuth_angle ──┤
+  │                                                                    ▼
+  ├─ /carla/car/f9p/fix ──→ f9p_to_utm ──→ /f9p_utm          gnss_to_odom
+  │                                                           │         │
+  │                                               /odometry/gnss   /utm_datum
+  │                                                           │         │
+  ├─ /carla/car/imu/data ─────────────────────────────────────┼─────────┼──┐
+  │                                                           │         │  │
+  └─ ros2_sensor.py ──→ /odometry/wheel ─────────────────────┼─────────┼──┤
+                                │                             │         │  │
+                                └─────────────┬──────────────┘         │  │
+                                              │                    csv_to_utm
+                                              │                    /csv_path
+                                              ▼
+                         local_ekf  ◄─ /odometry/wheel(vx,vy=0) + /imu/data(wz)
+                         global_ekf ◄─ /odometry/wheel(vx,vy=0) + /imu/data(wz) + /odometry/gnss
                               │                       │
                               ▼                       ▼
                     /odometry/local           /odometry/global
-                    odom → base_link TF       map → odom TF
+                    odom → base_link TF       utm → odom TF
                     (MPPI 제어용)              (전역 보정용)
 
-                         /odometry/local  ─→ /path/odom
-                         /odometry/gnss    ─→ /path/gnss
-                         /odometry/global ─→ /path/global_ekf
+                    /odometry/local  ─→ path_visualizer ─→ /path/odom
+                    /odometry/gnss   ─→ path_visualizer ─→ /path/gnss
+                    /odometry/global ─→ path_visualizer ─→ /path/global_ekf
 ```
 
 ---
@@ -901,7 +963,7 @@ controller_server
 
 | 요구사항 | 코드상 형태 | 실제 공급 주체 | 현재 파이프라인 충족 여부 | 권장 설정/조치 |
 | :--- | :--- | :--- | :--- | :--- |
-| 현재 차량 pose | `geometry_msgs/PoseStamped robot_pose` | `controller_server`가 TF/costmap으로 계산 | 충족 가능. `map→odom→base_link` TF가 있음 | Nav2 frame을 `global_frame: map`, `robot_base_frame: base_link` 기준으로 맞춤 |
+| 현재 차량 pose | `geometry_msgs/PoseStamped robot_pose` | `controller_server`가 TF/costmap으로 계산 | 충족 가능. `utm→odom→base_link` TF가 있음 | Nav2 frame을 `global_frame: utm`, `robot_base_frame: base_link` 기준으로 맞춤 |
 | 현재 차량 속도 | `geometry_msgs/Twist robot_speed` | `odom_topic`의 `nav_msgs/Odometry.twist.twist` | 충족. `/odometry/local`이 가장 적합 | `controller_server.odom_topic: /odometry/local` |
 | 로컬 제어용 path | `nav_msgs/Path transformed_global_plan` | `FollowPath` action의 path를 path handler가 변환 | dual filter만으로는 미충족 | Nav2 planner 또는 외부 global path publisher가 FollowPath action에 path 제공 필요 |
 | 최종 goal | `geometry_msgs/PoseStamped global_goal` | FollowPath action / path handler | dual filter만으로는 미충족 | 목표 pose 또는 path 마지막 pose 제공 필요 |
@@ -965,9 +1027,9 @@ odom_topic
 | 후보 topic | `odom_topic` 사용 가능? | 장점 | 문제점 | 판단 |
 | :--- | :--- | :--- | :--- | :--- |
 | `/odometry/local` | 가능 | wheel `vx`, `vy=0`, IMU `wz`가 융합된 연속적 twist. GNSS jump 없음 | 장기 위치 drift는 있지만 MPPI의 현재 속도 입력에는 큰 문제 없음 | **권장** |
-| `/wheel/odom` | 부분 가능 | 전방 속도 `linear.x`가 직접적이고 지연이 작음 | yaw rate를 쓰지 않도록 만든 topic이라 `angular.z`가 부정확하거나 0이 될 수 있음 | 비권장 |
+| `/odometry/wheel` | 부분 가능 | 전방 속도 `linear.x`가 직접적이고 지연이 작음 | yaw rate를 쓰지 않도록 만든 topic이라 `angular.z`가 부정확하거나 0이 될 수 있음 | 비권장 |
 | `/odometry/global` | 가능은 함 | global EKF 융합 결과 | GNSS 보정 영향이 섞이며 제어용 현재 속도에는 불필요 | 비권장 |
-| `/odometry/gnss` | 부적합 | 절대 위치와 dual GNSS yaw가 있음 | `utm_to_odometry`는 pose 브리지이며 twist를 제공하지 않음 | 사용 금지 |
+| `/odometry/gnss` | 부적합 | 절대 위치와 dual GNSS yaw가 있음 | `gnss_to_odom`는 pose 브리지이며 twist를 제공하지 않음 | 사용 금지 |
 
 권장 설정:
 
@@ -979,27 +1041,27 @@ controller_server:
     odom_duration: 0.3
 ```
 
-`/odometry/local`은 `/wheel/odom.twist.twist.linear.x`, `linear.y=0`, `/imu/data.angular_velocity.z`를 EKF로 융합하므로 MPPI의 `robot_speed` 입력으로 가장 안정적이다. 또한 `/odometry/local`은 GNSS 보정을 받지 않으므로 제어 루프에 GNSS jump를 전달하지 않는다.
+`/odometry/local`은 `/odometry/wheel.twist.twist.linear.x`, `linear.y=0`, `/imu/data.angular_velocity.z`를 EKF로 융합하므로 MPPI의 `robot_speed` 입력으로 가장 안정적이다. 또한 `/odometry/local`은 GNSS 보정을 받지 않으므로 제어 루프에 GNSS jump를 전달하지 않는다.
 
 ### 8.4 Pose와 TF 요구사항
 
 MPPI의 `robot_pose`는 odometry topic의 pose가 아니라 controller server/costmap/TF 경로에서 들어온다. 따라서 다음 TF가 반드시 살아 있어야 한다.
 
 ```text
-map ──> odom ──> base_link
+utm ──> odom ──> base_link
 ```
 
 | TF | 발행 주체 | MPPI 관점에서 필요한 이유 | 현재 충족 여부 |
 | :--- | :--- | :--- | :--- |
 | `odom → base_link` | `local_ekf` | local frame에서 차량 pose를 연속적으로 제공 | 충족 |
-| `map → odom` | `global_ekf` | global path/map frame과 local odom frame 연결 | 충족 |
-| `map → base_link` | TF 합성 결과 | global plan을 local control frame으로 변환할 때 필요 | 위 두 TF가 있으면 충족 |
+| `utm → odom` | `global_ekf` | global path/utm frame과 local odom frame 연결 | 충족 |
+| `utm → base_link` | TF 합성 결과 | global plan을 local control frame으로 변환할 때 필요 | 위 두 TF가 있으면 충족 |
 
 Nav2 costmap frame 설정은 보통 다음 구성이 자연스럽다.
 
 | Nav2 frame parameter | 권장값 | 이유 |
 | :--- | :--- | :--- |
-| `global_frame` | `map` 또는 local costmap에서는 `odom` | global planner/path와 local controller 구성에 따라 선택 |
+| `global_frame` | `utm` 또는 local costmap에서는 `odom` | global planner/path와 local controller 구성에 따라 선택 |
 | `robot_base_frame` | `base_link` | CARLA 차량 기준 프레임 |
 | `transform_tolerance` | `0.1` 이상에서 시작 | sim time/TF 지연을 흡수 |
 
@@ -1012,7 +1074,7 @@ MPPI는 path를 직접 만들지 않는다. `controller_server`가 FollowPath ac
 | 요구사항 | 필요 메시지/객체 | 현재 dual filter가 제공? | 추가 필요 |
 | :--- | :--- | :--- | :--- |
 | 추종할 global path | `nav_msgs/Path` | 아니오. `/path/gnss`, `/path/global_ekf`는 시각화용 주행 궤적임 | planner 또는 별도 path publisher |
-| path frame | 보통 `map` | 가능 | path header frame과 TF tree 일치 필요 |
+| path frame | 보통 `utm` | 가능 | path header frame과 TF tree 일치 필요 |
 | 최종 goal | path 마지막 pose 또는 action goal | 아니오 | FollowPath action goal 제공 |
 | transformed local plan | controller server 내부 생성 | Nav2가 생성 | TF와 path가 정상이어야 함 |
 
@@ -1094,8 +1156,8 @@ MPPI output
 | :--- | :--- | :--- | :--- | :--- |
 | 현재 속도 odometry | 필수 | `/odometry/local` | 충족 | `controller_server.odom_topic`에 지정 |
 | 연속 TF | 필수 | `odom→base_link` | 충족 | local EKF 유지 |
-| 전역 보정 TF | 필수에 가까움 | `map→odom` | 충족 | global EKF 유지 |
-| 현재 pose | 필수 | TF 합성 `map/odom→base_link` | 충족 가능 | Nav2 frame 설정 필요 |
+| 전역 보정 TF | 필수에 가까움 | `utm→odom` | 충족 | global EKF 유지 |
+| 현재 pose | 필수 | TF 합성 `utm/odom→base_link` | 충족 가능 | Nav2 frame 설정 필요 |
 | global path | 필수 | 없음. `/path/*`는 시각화용 | 미충족 | planner 또는 FollowPath용 path 생성 |
 | goal pose | 필수 | 없음 | 미충족 | Nav2 action goal 제공 |
 | local costmap | 장애물 회피 시 필수 | LiDAR topic은 있음 | 부분 충족 | Nav2 costmap 설정 필요 |
@@ -1108,7 +1170,7 @@ MPPI output
 
 ```text
 1. controller_server.odom_topic = /odometry/local
-2. Nav2 TF frame: map/odom/base_link 일치
+2. Nav2 TF frame: utm/odom/base_link 일치
 3. FollowPath에 넣을 계획 경로 생성
 4. local costmap 구성
 5. motion_model = ackermann 및 제약 튜닝
@@ -1119,7 +1181,7 @@ MPPI output
 
 ## 9. 실제 하드웨어 휠 오도메트리 구현
 
-CARLA 시뮬레이션에서는 `ros2_sensor.py`가 `/wheel/odom`을 직접 발행한다(Section 6.3). 실제 하드웨어에서는 이 역할을 `serial_bridge` 노드가 대신한다. 아두이노가 전륜 엔코더와 POT 조향각 센서 데이터를 시리얼로 전송하고, `serial_bridge`가 이를 파싱하여 자전거 모델 보정을 적용한 뒤 `/wheel/odom`으로 발행한다.
+CARLA 시뮬레이션에서는 `ros2_sensor.py`가 `/odometry/wheel`을 직접 발행한다(Section 6.3). 실제 하드웨어에서는 이 역할을 `serial_bridge` 노드가 대신한다. 아두이노가 전륜 엔코더와 POT 조향각 센서 데이터를 시리얼로 전송하고, `serial_bridge`가 이를 파싱하여 자전거 모델 보정을 적용한 뒤 `/odometry/wheel`으로 발행한다.
 
 ### 9.1 전륜 엔코더와 조향각 보정의 필요성
 
@@ -1209,7 +1271,7 @@ void encoderISR() {
 | :--- | :--- |
 | `/auto_throttle` → 아두이노 | Float32 수신 → `TH <val>\n` 시리얼 전송 |
 | `/auto_steer_angle` → 아두이노 | Float32 수신 → `SA <val>\n` 시리얼 전송 |
-| 아두이노 → `/wheel/odom` | 시리얼 수신 → VX/PS 파싱 → 보정 → Odometry 발행 |
+| 아두이노 → `/odometry/wheel` | 시리얼 수신 → VX/PS 파싱 → 보정 → Odometry 발행 |
 
 #### 핵심 처리 흐름
 
@@ -1224,8 +1286,8 @@ void encoderISR() {
          = 0.5123 × 0.9892
          = 0.5068 m/s
          ↓
-  /wheel/odom.twist.twist.linear.x = 0.5068
-  /wheel/odom.twist.twist.linear.y = 0.0   (비홀로노믹 제약)
+  /odometry/wheel.twist.twist.linear.x = 0.5068
+  /odometry/wheel.twist.twist.linear.y = 0.0   (비홀로노믹 제약)
          ↓
   local_ekf / global_ekf odom0 입력
 ```
@@ -1261,7 +1323,7 @@ serial_bridge:
     startup_silence_sec: 3.0    # 시작 직후 아두이노 초기화 동안 송신 차단
 ```
 
-### 9.4 CARLA 시뮬레이션과 실제 하드웨어의 `/wheel/odom` 비교
+### 9.4 CARLA 시뮬레이션과 실제 하드웨어의 `/odometry/wheel` 비교
 
 | 항목 | CARLA 시뮬레이션 (ros2_sensor.py) | 실제 하드웨어 (serial_bridge) |
 | :--- | :--- | :--- |
@@ -1307,3 +1369,950 @@ ros2 run serial_bridge serial_bridge
 ```
 
 검증 방법: 차량 바퀴를 정확히 1바퀴 수동 회전시키면서 `encoder_count` 변화량을 시리얼 모니터로 확인한다. 이 값이 `ENCODER_PPR`과 일치해야 한다.
+
+---
+
+## 10. CARLA + MPPI 준비 상태 분석 및 실행 매뉴얼
+
+### 10.1 현재 상태 요약
+
+아래 분석은 `/home/hannibal/carla/mppi/` 워크스페이스의 빌드 결과물과 소스 코드를 실제로 비교하여 작성한 것이다.
+
+#### 충족 항목 (dual_filter 스택)
+
+| 항목 | 상태 | 비고 |
+| :--- | :---: | :--- |
+| `/clock` 발행 | ✅ | `ros2_sensor.py`: CARLA simulation time |
+| `/odometry/wheel` 발행 | ✅ | `ros2_sensor.py`: vx, vy=0, sim time stamp, covariance 설정 |
+| `/carla/car/imu/data` 발행 | ✅ | `ros2_sensor.py`: `angular_velocity.z` CARLA→ROS 부호 반전 |
+| `/carla/car/f9r/fix`, `/f9p/fix` 발행 | ✅ | `ros2_sensor.py` |
+| `gnss_to_utm` 소스 구현 | ✅ | `f9r_to_utm`, `f9p_to_utm`, `azimuth_angle_calculator`, `csv_to_utm` |
+| `dual_filter` 소스 구현 | ✅ | `gnss_to_odom.py`, `path_visualizer.py`, CARLA Y축 부호 반전 |
+| `ekf_params.yaml` 설정 | ✅ | local: `world_frame=odom`, global: `world_frame=utm`, covariance 완성 |
+| `dual_filter.launch.py` 리매핑 | ✅ | CARLA 토픽명 → EKF 내부 토픽명 전체 설정 |
+| TF tree 설계 | ✅ | `utm → odom → base_link` (REP-105 준수) |
+| `robot_localization` 설치 | ✅ | `ros-humble-robot-localization 3.5.4` |
+
+
+#### MPPI 구성 항목
+
+| 항목 | 상태 | 설명 |
+| :--- | :---: | :--- |
+| Nav2 패키지 설치 | ✅ | `nav2_controller`, `nav2_mppi_controller`, `nav2_costmap_2d`, `nav2_lifecycle_manager` 1.1.20 apt 설치 완료 |
+| controller_server 설정 파일 | ✅ | `mppi/src/dual_filter/config/nav2_carla_params.yaml` 작성 완료. controller_server 3계층(제어루프·MPPI플러그인·local_costmap) + 7개 critic 설정. 차량별 튜닝 필수값: `min_turning_r`, `vx_max` |
+| `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(wz·L, vx)) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
+| global path 공급 | ✅ | `mppi/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. `/csv_path` transient_local 구독 → FollowPath action goal 전송. action 수락 시 MPPI 경로 추종 시작 |
+| local costmap 설정 | ✅ | `nav2_carla_params.yaml` 안에 포함. obstacle_layer(`/carla/car/lidar_2d/point_cloud`) + inflation_layer(1.5 m) 구성. CostCritic 미사용 상태이므로 장애물 회피 비활성. 장애물 회피 활성화 시 critics 목록에 `CostCritic` 추가 필요 |
+
+---
+
+#### 10.1.1 `nav2_carla_params.yaml` 상세
+
+파일 위치: `mppi/src/dual_filter/config/nav2_carla_params.yaml`
+
+파일은 `controller_server` → `MPPI 플러그인(FollowPath)` → `local_costmap` 의 3계층으로 구성된다.
+
+##### controller_server 계층
+
+| 파라미터 | 값 | 설명 |
+| :--- | :--- | :--- |
+| `controller_frequency` | 20.0 Hz | local_ekf(50 Hz)보다 낮게. `model_dt = 1/20 = 0.05 s`와 일치시킬 것 |
+| `odom_topic` | `/odometry/local` | local EKF 출력(GNSS 미포함) 사용. GNSS 오차 도약에 면역 |
+| `costmap_update_timeout` | 0.30 s | sim time TF 지연 흡수 |
+| `failure_tolerance` | 0.3 s | 유효 cmd_vel 미생성 허용 시간 |
+| `progress_checker` | `SimpleProgressChecker` | 10 s 동안 0.5 m 이상 이동 없으면 stuck 판정 |
+| `goal_checker` | `SimpleGoalChecker` | 목표 0.5 m / 0.3 rad 이내 도달 시 성공 |
+| `PathHandler` | `FeasiblePathHandler` | 이미 지나친 waypoint prune_distance 5.0 m 이상이면 제거 |
+
+##### MPPI 플러그인 계층 (`FollowPath` 슬롯)
+
+###### 예측 수평선 및 샘플 (time_steps / model_dt / batch_size)
+
+| 파라미터 | 값 | 설명 |
+| :--- | :--- | :--- |
+| `time_steps` | 56 | 예측 구간 = 56 × 0.05 s = **2.8 s** / 14 m (vx=5 m/s 기준) |
+| `model_dt` | 0.05 s | `1 / controller_frequency` 와 반드시 일치 |
+| `batch_size` | 2000 | 동시 후보 궤적 수. CPU 환경 기준. GPU 가속 시 4096 이상 권장 |
+| `open_loop` | false | 닫힌루프: 각 time step 마다 실제 odometry 반영 |
+
+**`time_steps` 조정 지침**
+
+```text
+예측 구간 = time_steps × model_dt × vx_max
+           = 56 × 0.05 s × 5 m/s = 14 m
+
+* 너무 짧으면 (< 10 m): 급커브 진입 전에 미리 감속·회전을 준비하지 못해
+  경로를 벗어나거나 급조향 발생.
+* 너무 길면 (> 20 m): 계산량 비례 증가, 먼 미래 비용이 지나치게 영향을
+  미쳐 현재 제어가 흔들릴 수 있음.
+* 조정 공식: time_steps = (원하는 예측거리 m) / (model_dt × vx_max)
+  예) 예측 3 s, vx_max=5 m/s → time_steps = 3 / 0.05 = 60
+```
+
+**`batch_size` 와 계산 비용**
+
+```text
+총 연산 규모 ∝ batch_size × time_steps × controller_frequency
+            = 2000 × 56 × 20 = 2,240,000 회/s (롤아웃 스텝 합계)
+
+* CPU 기준 허용: 약 2,000~4,000 batch × 56 steps @ 20 Hz
+* 실시간 여부 확인: ros2 topic hz /cmd_vel → 20 Hz 근접 확인
+* GPU 가속 시: batch_size=8192까지 증가 가능 → 궤적 품질 대폭 향상
+```
+
+---
+
+###### 가속도 및 속도 범위
+
+| 파라미터 | 값 | 역할 | 튜닝 지침 |
+| :--- | :--- | :--- | :--- |
+| `ax_max` | 2.0 m/s² | 최대 전방 가속도 | CARLA 차량 최대 가속 성능 이내로 설정 |
+| `ax_min` | -3.0 m/s² | 최대 제동 감속도 | 브레이크 성능 이내. 더 강한 제동이 필요하면 절댓값을 키움 |
+| `az_max` | 1.5 rad/s² | 최대 yaw 가속도 | 크면 급격한 조향 허용; 작으면 부드러운 조향 |
+| `vx_max` | 5.0 m/s | MPPI 궤적 최대 속도 | **반드시 낮은 값(2.0)에서 시작**, 안정 확인 후 단계적으로 증가 |
+| `vx_min` | -0.5 m/s | MPPI 궤적 최소 속도 | 소폭 후진 허용. 후진 불필요 시 0.0으로 변경 |
+| `wz_max` | 1.5 rad/s | 최대 yaw rate | `vx_max / min_turning_r`와 일치: 5.0/3.3 ≈ 1.5 |
+
+> **`vx_max` 와 `wz_max` 연동**: 두 값이 `min_turning_r` 를 통해 물리적으로 연결되어 있다.
+> `vx_max`를 높이면 `wz_max`도 함께 높여야 고속 커브에서 충분한 조향 yaw rate를 확보할 수 있다.
+> 반대로 `wz_max`가 너무 높으면 저속에서 급선회 궤적이 과도하게 생성된다.
+
+---
+
+###### MPPI 알고리즘 핵심 파라미터 (temperature / vx_std / wz_std)
+
+| 파라미터 | 값 | 설명 |
+| :--- | :--- | :--- |
+| `vx_std` | 0.3 m/s | 속도 탐색 노이즈 크기 |
+| `wz_std` | 0.3 rad/s | 조향 탐색 노이즈 크기 |
+| `temperature` | 0.3 | softmax 가중치 날카로움 (MPPI의 λ) |
+| `gamma` | 0.015 | 미래 비용 discount factor |
+| `iteration_count` | 1 | 한 제어 주기 내 최적화 반복 수 |
+
+**`temperature` (λ) 상세**
+
+MPPI의 최종 제어 입력은 모든 후보 궤적의 가중 평균이다:
+
+```text
+U* = Σ w_k × U_k
+     where w_k = exp(-J_k / λ) / Σ exp(-J_j / λ)
+                 (J_k = k번째 궤적의 총 비용)
+
+* λ → 0 (temperature → 0): w_k가 최저 비용 궤적에만 집중
+    → 가장 공격적이고 최적에 가까운 제어. 소음에 민감, 급격한 조향 가능.
+* λ → ∞ (temperature → ∞): 모든 궤적이 동일 가중치
+    → 매우 보수적이고 부드러운 제어. 경로 이탈은 줄지만 반응 둔화.
+
+권장 초기값: 0.3 (도심 주행)
+  과도한 조향 진동 시: 0.1~0.2로 낮춤
+  너무 보수적(경로와 멀리 달림) 시: 0.5~1.0으로 높임
+```
+
+**`vx_std` / `wz_std` 조향 노이즈 상세**
+
+```text
+각 후보 궤적의 제어 입력:
+  U_k = U_nominal + ε_k,   ε_k ~ N(0, σ²)
+  여기서 σ = vx_std 또는 wz_std
+
+* vx_std 너무 크면: 속도 변동 과다 → 덜컹거리는 가속/감속
+* wz_std 너무 크면: 조향각 진동(oscillation) → 차량이 좌우로 흔들림
+* vx_std 너무 작으면: 속도 탐색 범위 좁음 → 구불구불한 경로에서 최적 속도 못 찾음
+* wz_std 너무 작으면: 조향 탐색 범위 좁음 → 급커브에서 경로 이탈
+
+진동 발생 시 조정 순서:
+  1. wz_std: 0.3 → 0.2 → 0.15 (조향 진동)
+  2. temperature: 0.3 → 0.2 (전체적인 흔들림)
+  3. PathAngleCritic.cost_weight: 2.0 → 1.0 (급커브 과잉 반응)
+```
+
+**`gamma` (discount factor)**
+
+```text
+총 비용: J = Σ_{t=0}^{T} γ^t × c_t
+          (c_t = t번째 스텝에서의 critic 비용 합)
+
+* γ = 0.015 → 현재값에 가까운 스텝이 미래 스텝보다 훨씬 중요
+  γ^56 ≈ 0.015^56 ≈ 거의 0 → 수평선 끝 비용 무시
+* 값을 높이면(0.1~0.5): 먼 미래까지 균등하게 고려 → 선견지명 증가, but 현재 반응 둔화
+```
+
+**`iteration_count`**
+
+```text
+1 제어 주기(1/20 s = 50 ms) 안에서 최적화를 반복할 횟수.
+* 1 (기본): 실시간 성능이 부족한 환경. 대부분의 경우 충분.
+* 2~3: 계산 여유가 있을 때. 더 나은 최적해 탐색.
+  하지만 iteration_count × 실행시간 > 1/freq 이면 deadline miss 발생.
+  ros2 topic hz /cmd_vel 로 발행 주기를 반드시 확인할 것.
+```
+
+---
+
+###### 운동 모델 (ackermann)
+
+| 파라미터 | 값 | 역할 |
+| :--- | :--- | :--- |
+| `motion_model` | `ackermann` | 차량형 플랫폼 필수 |
+| `min_turning_r` | 3.3 m | MPPI 후보 궤적의 최소 회전반경 하한 |
+
+**`min_turning_r` 의 의미**
+
+```text
+ackermann 운동 모델의 조향 제약:
+  |wz| ≤ vx / min_turning_r
+
+이 값보다 급격한 회전 궤적은 AckermannMotionModel 내부에서 클리핑된다.
+
+값이 너무 작으면 (예: 1.0):
+  → 실제 차량이 불가능한 급선회 궤적도 "유효"로 평가
+  → MPPI가 이 궤적을 선택하면 실제 차량은 못 따라가 경로 이탈
+
+값이 너무 크면 (예: 10.0):
+  → 모든 커브 진입에서 크게 돌아가야 함 → 급커브 경로 이탈
+
+CARLA 실측 방법:
+  1) 차량 최대 조향각으로 원 주행 (manual_control.py)
+  2) ros2 topic echo /odometry/local 으로 x, y 기록
+  3) 원 반경 계산: r = sqrt((x-cx)² + (y-cy)²)
+  microlino 예상값: ~3.3 m
+```
+
+---
+
+###### Critics 비용 함수 상세
+
+distance-from-goal 에 따른 critic 활성 여부
+
+```text
+목표까지 거리  │ 활성 Critic
+───────────────┼────────────────────────────────────
+항상           │ ConstraintCritic, PathAlignCritic,
+               │ PathFollowCritic
+0.5 m 이상     │ PreferForwardCritic, PathAngleCritic
+2.0 m 이내     │ GoalCritic         (활성화 시작)
+1.0 m 이내     │ GoalAngleCritic    (활성화 시작)
+───────────────┴────────────────────────────────────
+```
+
+| Critic | 가중치 | `offset_from_furthest` | 상세 역할 및 튜닝 |
+| :--- | :---: | :---: | :--- |
+| `PathAlignCritic` | **14.0** | 20 | 경로와 평행 주행. **가장 중요한 critic.** 값을 낮추면 경로 이탈 빈번해짐 |
+| `GoalCritic` | 5.0 | — | 예측 수평선 끝(time_steps번째 pose)이 목표 2.0 m 이내 시 활성. 값이 높을수록 목표에 빠르게 접근 |
+| `PathFollowCritic` | 5.0 | 5 | 어떤 샘플이든 가장 멀리 도달한 waypoint에서 5칸 뒤 점을 비용 목표로 사용. 값 크게 → 전진 압력 강함 / 값 작게 → 보수적 추종 |
+| `PreferForwardCritic` | 5.0 | — | 후진 궤적 패널티. 후진 불필요 환경에서는 10.0으로 높여 완전 억제 가능 |
+| `ConstraintCritic` | 4.0 | — | `vx_min~vx_max`, `wz_max` 범위 초과 궤적 패널티. 너무 낮으면 제약 위반 허용 |
+| `GoalAngleCritic` | 3.0 | — | 목표 1.0 m 이내에서 heading 정렬. 주차 정밀도가 낮아도 되면 0으로 비활성화 가능 |
+| `PathAngleCritic` | 2.0 | 4 | 커브 진입 전 heading 사전 정렬. 너무 높으면 직선 구간에서 불필요한 조향 유발 |
+
+###### `offset_from_furthest` 동작 원리
+
+매 0.05 s(20 Hz)마다 MPPI는 다음 세 단계로 작동한다.
+
+Step 1 — 2000개 trajectory 시뮬레이션
+
+```text
+경로(path):  ●─●─●─●─●─●─●─●─●─●─●─●─●─●─●
+             0  1  2  3  4  5  6  7  8  9  10 11 12 ...
+                      ↑
+                  현재 위치 (index 3)
+
+각 trajectory는 56 step × 0.05 s = 2.8 s 동안 시뮬레이션됨.
+차량 속도 5 m/s라면 각 trajectory는 약 14 m 앞까지 뻗어나감.
+```
+
+Step 2 — 각 trajectory의 경로 진행도 측정 → furthest 결정
+
+```text
+경로:  ●─●─●─●─●─●─●─●─●─●─●─●─●
+       0  1  2  3  4  5  6  7  8  9  10 11 12 ...
+                      ↑
+                  현재 위치
+
+trajectory A (잘 따라간 경우):    ~~~~~~~~~~~~~~~~~~~~→ index 11 도달
+trajectory B (약간 벗어난 경우):  ~~~~~~~~~~~~~~→ index 8 도달
+trajectory C (많이 벗어난 경우):  ~~~~~~~~→ index 5 도달
+...
+trajectory 2000 (최악):           ~~→ index 4 도달
+
+2000개 중 가장 멀리 도달한 것 = index 11
+                                       ↑
+                                  이것이 "furthest"
+```
+
+Step 3 — target 결정 및 비용 평가
+
+```text
+furthest = 11
+offset_from_furthest = 5  →  target = 11 - 5 = 6
+
+경로:  ●─●─●─●─●─●─●─●─●─●─●─●─●
+       0  1  2  3  4  5  6  7  8  9  10 11
+                      ↑         ↑          ↑
+                  현재위치   target     furthest
+
+2000개 trajectory를 "index 6에 얼마나 가까이 접근했는가"로 점수 매김.
+```
+
+왜 furthest 자체를 target으로 쓰지 않는가
+
+```text
+offset = 0  →  target = furthest = index 11
+
+  index 11에 도달하는 trajectory: 겨우 1~2개 (trajectory A만 거기까지 감)
+  나머지 1998개: 모두 index 11과 멀리 떨어져 있어 비용이 비슷하게 높음
+  → "어느 방향이 좋은지" 비용 차이가 거의 없음 (gradient 평탄)
+  → 최적화 방향을 못 찾음 → 제어 불안정
+
+offset = 5  →  target = index 6
+
+  index 6 근방에 도달하는 trajectory: 수백~수천 개
+  → "경로를 잘 따라간 것"과 "벗어난 것"의 비용 차이가 명확함
+  → 어느 방향으로 제어해야 할지 gradient가 뚜렷함 → 안정적인 최적화
+
+값이 너무 크면 (15↑):
+  target이 현재 위치 가까이 오므로 전진 압력이 약해져 차량이 정체됨.
+```
+
+###### 실제 lookahead 거리 계산
+
+```text
+lookahead 거리는 offset_from_furthest가 아니라
+MPPI의 시간 지평선(time_steps × model_dt)과 차량 속도가 결정한다.
+
+  lookahead ≈ time_steps × model_dt × current_vx
+             = 56 × 0.05 s × vx
+
+속도별 lookahead 거리:
+  vx = 2 m/s  →  56 × 0.05 × 2 = 5.6 m
+  vx = 5 m/s  →  56 × 0.05 × 5 = 14 m   (설계 기준)
+  vx = 8 m/s  →  56 × 0.05 × 8 = 22.4 m
+
+offset_from_furthest의 실거리 (10 cm 간격 경로 기준):
+  offset = 5  →  5 × 0.1 m = 0.5 m  (furthest에서 0.5 m 뒤)
+  offset = 8  →  8 × 0.1 m = 0.8 m
+  offset = 20 →  20 × 0.1 m = 2.0 m  (PathAlignCritic 기본값)
+
+즉, offset_from_furthest는 "얼마나 앞을 보는가"가 아니라
+"furthest 지점에서 얼마나 뒤를 비용 목표로 삼는가"다.
+lookahead를 늘리려면 time_steps 또는 vx_max를 올려야 한다.
+```
+
+###### `PathFollowCritic` ↔ `PathAlignCritic` 상호작용
+
+```text
+PathFollowCritic: "얼마나 빠르게 앞으로 나아갈 것인가"
+  offset이 작을수록 더 많은 샘플이 목표에 도달 → 안정적이나 전진 압력 약함
+  offset이 클수록 목표가 furthest 근처 → 전진 압력 강함, gradient 불안정 위험
+
+PathAlignCritic: "경로 선과 얼마나 평행하게 달릴 것인가"
+  offset_from_furthest=20 → furthest에서 2 m 뒤 방향과 정렬
+  가중치 14.0으로 가장 강함 → 다른 critic이 충돌하면 PathAlign이 우선
+
+조향 진동 원인 분석:
+  PathFollowCritic.offset_from_furthest 가 너무 높고
+  PathAngleCritic.cost_weight 가 너무 높으면 → 목표 방향 과잉 정렬
+  → PathAngleCritic 먼저 낮춤 (2.0 → 1.0)
+```
+
+##### local_costmap 계층
+
+| 파라미터 | 값 | 설명 |
+| :--- | :--- | :--- |
+| `global_frame` | `odom` | MPPI가 odom 프레임에서 롤아웃하므로 일치 필수 |
+| `width × height` | 20 m × 20 m | 예측 거리 14 m + 후방 여유. 0.1 m/cell = 200×200 격자 |
+| `obstacle_layer.topic` | `/carla/car/lidar_2d/point_cloud` | stack.json 의 1채널 2D LiDAR |
+| `obstacle_max_range` | 15.0 m | lidar_2d 정확도 신뢰 범위 |
+| `inflation_radius` | 1.5 m | 차폭 1.475 m / 2 + 안전 여유 0.76 m |
+
+> **CostCritic 없음**: 현재 critics 목록에 `CostCritic`이 없으므로 costmap이 구성되어 있어도 MPPI가 장애물 비용을 궤적 평가에 반영하지 않는다. 장애물 회피를 활성화하려면 critics 목록에 `"CostCritic"`을 추가하고 아래 설정을 넣는다.
+>
+> ```yaml
+> CostCritic:
+>   enabled: true
+>   cost_weight: 3.81
+>   cost_power: 1
+>   consider_footprint: false
+>   critical_cost: 300.0
+>   inflation_layer_name: "inflation_layer"
+> ```
+
+---
+
+#### 10.1.2 `cmd_vel_to_carla.py` 상세
+
+파일 위치: `mppi/src/dual_filter/dual_filter/cmd_vel_to_carla.py`
+
+MPPI가 출력하는 `/cmd_vel` (`geometry_msgs/Twist`)을 CARLA `VehicleControl`로 변환하는 노드.
+
+##### 변환 로직
+
+###### 속도 → throttle / brake (P 제어)
+
+```text
+err = target_vx − current_vx
+if err > 0:  throttle = min(KP_SPEED × err, 1.0),  brake = 0
+else:        throttle = 0,  brake = min(−KP_SPEED × err, 1.0)
+```
+
+`KP_SPEED = 0.8` 기본값. 오버슈트(속도 초과 후 급감속) 발생 시 0.5로 낮춘다.
+
+###### yaw rate → 조향각 (자전거 모델 역변환)
+
+```text
+δ = atan2(wz × L, vx)       (단위: rad)
+steer = clip(δ / max_steer_rad, −1, 1)   (CARLA 정규화값)
+```
+
+* `L`: 축간거리(wheelbase). CLI `--wheelbase` 로 지정 (기본값: microlino 1.47 m).
+* `max_steer_rad`: 실행 시 `vehicle.get_physics_control().wheels[:2]`에서 자동 조회.
+* `vx < 0.05 m/s` (거의 정지) 이면 `δ = 0` → 정지 중 급선회 방지.
+
+##### 실행 방법
+
+```bash
+cd ~/carla
+source .venv/bin/activate
+source /opt/ros/humble/setup.bash
+source mppi/install/setup.bash
+ros2 run dual_filter cmd_vel_to_carla \
+  --ros-args -p use_sim_time:=true \
+  -- --rolename car --wheelbase 1.47
+```
+
+`--` 이후는 CARLA/argparse 인수, 이전은 ROS 인수.
+
+##### 차량별 조정 필요 파라미터
+
+| 파라미터 | 조정 방법 |
+| :--- | :--- |
+| `--wheelbase` | CARLA physics_control 또는 차량 blueprint 스펙으로 확인 |
+| `_KP_SPEED` | 코드 내 상수 직접 수정. 오버슈트 시 낮춤 |
+
+---
+
+#### 10.1.3 `follow_path_client.py` 상세
+
+파일 위치: `mppi/src/dual_filter/dual_filter/follow_path_client.py`
+
+`csv_to_utm`이 발행하는 `/csv_path`를 받아 `controller_server`의 `FollowPath` action에 goal을 전송하는 노드.
+
+##### 동작 흐름
+
+```text
+csv_to_utm 발행 → /csv_path (transient_local)
+      ↓ 구독 (동일 transient_local QoS 필수)
+follow_path_client
+      ↓ FollowPath.Goal 구성 (controller_id='FollowPath')
+controller_server /follow_path action server
+      ↓ goal accepted
+MPPI 경로 추종 시작 → /cmd_vel 발행
+```
+
+##### QoS 주의사항
+
+`csv_to_utm`은 `/csv_path`를 `transient_local RELIABLE KeepLast(1)`로 발행한다. `follow_path_client`가 **다른 QoS로 구독하면 경로를 영원히 수신하지 못한다**. 코드 내 `_path_qos`가 동일 QoS로 설정되어 있으므로 수정하지 않는다.
+
+##### action 결과 코드
+
+| status | 의미 |
+| :---: | :--- |
+| 3 | 성공 (목표 도달) |
+| 4 | 취소됨 |
+| 6 | 중단 (progress_checker 실패 또는 controller 오류) |
+
+---
+
+#### 10.1.4 CSV 경로 스플라인 보간 도구 (`csv_interpolater.py`)
+
+파일 위치: `mppi/src/gnss_to_utm/src/csv_interpolater.py`
+
+##### MPPI에서 스플라인 보간이 필수인 이유
+
+MPPI는 수천 개의 후보 궤적을 경로와 비교해 비용을 평가하는 방식으로 동작한다. 이 과정에서 경로 자체의 품질이 추종 성능을 직접 결정한다.
+
+GNSS 수록 주기가 1~5 Hz라면 원시 CSV의 waypoint 간격이 1~3 m 이상이 된다. MPPI가 이처럼 간격이 넓은 경로를 입력받으면 다음 문제가 구조적으로 발생한다:
+
+###### ① PathAlignCritic 방향 불연속 → 조향 진동
+
+```text
+PathAlignCritic 은 인접 waypoint 간 방향 벡터를 "경로 방향"으로 간주한다.
+원시 CSV에서 waypoint 간격이 크면 GPS 노이즈가 방향 계산에 크게 반영되어
+waypoint마다 경로 방향이 불연속으로 꺾인다.
+
+MPPI 는 이 방향 변화를 "실제 커브"로 인식하므로,
+직선 구간에서도 불필요한 조향 명령이 생성된다.
+```
+
+###### ② offset_from_furthest 의 실거리가 불균일
+
+```text
+PathFollowCritic.offset_from_furthest = 5 의 의미:
+  "예측 구간 내 최원 waypoint에서 5번째 앞 waypoint까지의 거리"
+
+원시 CSV (1~3 m 간격): offset=5 → 실거리 5~15 m (매우 불균일)
+보간 CSV (0.1 m 간격): offset=5 → 실거리 항상 0.5 m (완전 균일)
+
+간격이 불균일하면 MPPI가 커브 구간에서는 너무 가까운 점을,
+직선 구간에서는 너무 먼 점을 추적해 속도가 불안정해진다.
+```
+
+###### ③ PathAngleCritic heading 계산 오차
+
+```text
+PathAngleCritic은 "현재 차량 heading vs 경로 방향" 오차를 최소화한다.
+경로 방향이 waypoint 간 직선으로만 정의되면,
+커브 진입 시 경로 방향이 계단식으로 변해 적절한 사전 조향이 불가능하다.
+스플라인 보간 후에는 경로 방향이 연속적이므로 커브 진입 수 m 전부터
+부드럽게 heading을 틀기 시작한다.
+```
+
+**결론**: 스플라인 보간을 적용하면 MPPI critic 들이 이상적인 입력을 받게 되어 파라미터 튜닝 없이도 추종 품질이 즉각적으로 개선된다. `csv_interpolater.py` 를 경로 녹화 직후 한 번 실행해 두면 이후 모든 주행에서 같은 dense CSV를 재사용할 수 있다.
+
+##### 동작 원리
+
+```text
+입력 CSV (원시 GNSS UTM)
+  예) 점 수: 300, 총 거리: 500 m, 평균 간격: 1.67 m
+      ↓
+1. 중복점 제거 (인접 점 거리 < 1e-6 m 제거)
+2. 누적 호 길이 파라미터 s 계산
+   s[0]=0, s[i] = s[i-1] + dist(pt[i-1], pt[i])
+3. CubicSpline(s, easting), CubicSpline(s, northing) 피팅
+   → C² 연속성 보장 (매끄러운 2차 미분 = 곡률 연속)
+4. s_new = [0, 0.1, 0.2, ..., total_len] (0.1 m 등간격)
+5. (e_new, n_new) = (cs_e(s_new), cs_n(s_new))
+      ↓
+출력 CSV (보간된 UTM, 10 cm 간격)
+  예) 점 수: 5000, 총 거리: 500 m, 간격: 0.1 m
+```
+
+##### csv_interpolater.py 실행 방법
+
+```bash
+# ROS 환경 불필요. 시스템 Python3 또는 .venv 어디서나 실행 가능.
+cd ~/carla/mppi/src/gnss_to_utm/src
+
+# 기본 (10 cm 간격)
+python3 csv_interpolater.py /path/to/input.csv /path/to/output_10cm.csv
+
+# 간격 변경 (50 cm)
+python3 csv_interpolater.py input.csv output_50cm.csv --interval 0.5
+
+# 시각화 포함 (matplotlib 필요)
+python3 csv_interpolater.py input.csv output.csv --interval 0.1 --plot
+```
+
+##### 보간 결과 csv_to_utm 에 적용
+
+```yaml
+# mppi/src/gnss_to_utm/config/csv_to_utm.yaml
+csv_to_utm:
+  ros__parameters:
+    use_sim_time: true
+    csv_file_path: "/path/to/output_10cm.csv"   # ← 보간된 파일로 교체
+```
+
+##### MPPI 경로 품질 개선 효과
+
+| 항목 | 원시 CSV (1~3 m 간격) | 보간 CSV (10 cm 간격) |
+| :--- | :--- | :--- |
+| PathAlignCritic 방향 연속성 | waypoint마다 불연속 꺾임 | C² 연속 (완전 부드러움) |
+| 조향 진동 | 직선에서도 발생 | 대폭 감소 |
+| offset_from_furthest 실거리 | 1~15 m (불균일) | 항상 `offset × 0.1 m` (균일) |
+| PathAngleCritic 사전 회전 | 커브 직전에야 반응 | 수 m 전부터 부드럽게 선회 |
+| RViz 경로 시각화 | 꺾은선 | 부드러운 곡선 |
+
+> **10 cm 간격의 trade-off**: 원시 300점 → 보간 후 5000점. `csv_to_utm`이 발행하는 `/csv_path`의 pose 수가 증가하므로 `PathHandler`의 pruning 빈도가 올라간다. 경로가 매우 길어(5 km 이상) 메모리 사용이 걱정될 경우 `--interval 0.2`(20 cm)로 타협 가능.
+
+---
+
+### 10.2 레퍼런스 맵 제작 (MPPI 추종 경로 생성)
+
+MPPI가 추종할 경로는 **실제 주행 데이터를 녹화 → UTM CSV 변환 → 스플라인 보간**의 3단계로 제작한다.
+
+관련 스크립트 위치:
+
+| 스크립트 | 경로 |
+| :--- | :--- |
+| `f9r_to_csv.py` | `mppi/src/gnss_to_utm/src/f9r_to_csv.py` |
+| `csv_interpolater.py` | `mppi/src/gnss_to_utm/src/csv_interpolater.py` |
+
+---
+
+#### Step 1 — 주행 경로 ROS2 bag 녹화
+
+레퍼런스 경로를 주행하면서 F9R GNSS 토픽을 bag으로 기록한다.
+
+```bash
+# 저장 경로는 자유롭게 지정
+ros2 bag record /carla/car/f9r/fix \
+  -o ~/carla/mppi/src/gnss_to_utm/gnss_data/ros2bag/route_1
+```
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 녹화 토픽 | `/carla/car/f9r/fix` |
+| 메시지 타입 | `sensor_msgs/NavSatFix` |
+| 필드 | `latitude`, `longitude` (WGS84 도 단위) |
+| storage | sqlite3 (ROS2 Humble 기본값) |
+
+> **CARLA 환경**: 토픽명은 `stack.json`의 vehicle `id` 필드에 따라 결정된다.
+> 현재 `id: car` → 토픽명 `/carla/car/f9r/fix`.
+> 실차에서는 GNSS 드라이버가 발행하는 `NavSatFix` 토픽명으로 변경한다.
+
+---
+
+#### Step 2 — bag → 원시 UTM CSV 변환 (`f9r_to_csv.py`)
+
+```bash
+# f9r_to_csv.py 상단의 경로를 녹화한 bag에 맞게 수정 후 실행
+# bag_path  : 녹화한 bag 디렉토리 경로 (확장자 없이)
+# csv_path  : 출력 CSV 경로 (자동 생성됨)
+
+cd ~/carla/mppi/src/gnss_to_utm/src
+python3 f9r_to_csv.py
+```
+
+스크립트 상단의 두 경로를 직접 편집해야 한다:
+
+```python
+# f9r_to_csv.py 17~24번째 줄
+bag_path = "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/ros2bag/route_1"
+csv_path = "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_1.csv"
+```
+
+실행 결과:
+
+```text
+Input bag path:  .../gnss_data/ros2bag/route_1
+Output CSV path: .../gnss_data/csv/route_1.csv
+Successfully processed 1847 messages and saved to ...
+```
+
+출력 CSV 형식:
+
+```text
+X(E/m),Y(N/m)
+316842.123456789012345,3946210.987654321098765
+316842.234567890123456,3946211.098765432109876
+...
+```
+
+> **UTM 존 자동 감지**: 첫 번째 메시지의 경도로 UTM zone을 계산하므로 별도 설정 불필요.
+> 출력 정밀도는 소수점 15자리 (약 0.1 nm 정밀도).
+
+---
+
+#### Step 3 — 스플라인 보간 + 등간격 재샘플링 (`csv_interpolater.py`)
+
+원시 CSV는 주행 속도에 따라 점 간격이 1~3 m로 불균일하다.
+MPPI critic이 안정적으로 작동하려면 10 cm 등간격으로 재샘플링이 필요하다
+(이유는 [10.1.4](#1014-csv-경로-스플라인-보간-도구-csv_interpolaterpy) 참고).
+
+```bash
+cd ~/carla/mppi/src/gnss_to_utm/src
+
+# 기본 (10 cm 간격)
+python3 csv_interpolater.py \
+  ../gnss_data/csv/route_1.csv \
+  ../gnss_data/csv/route_1_10cm.csv
+
+# 간격 변경 (20 cm)
+python3 csv_interpolater.py \
+  ../gnss_data/csv/route_1.csv \
+  ../gnss_data/csv/route_1_20cm.csv \
+  --interval 0.2
+
+# 보간 결과 시각화 확인 (matplotlib 필요)
+python3 csv_interpolater.py \
+  ../gnss_data/csv/route_1.csv \
+  ../gnss_data/csv/route_1_10cm.csv \
+  --plot
+```
+
+실행 출력 예:
+
+```text
+입력: route_1.csv
+  점 수    : 1847
+  총 길이  : 2304.187 m
+  평균 간격: 1.248 m
+
+재샘플링 간격: 0.1 m
+  보간 후 점 수: 23043
+
+저장 완료: route_1_10cm.csv
+```
+
+---
+
+#### Step 4 — csv_to_utm 노드에 적용
+
+보간된 CSV를 `csv_to_utm.yaml`에 등록한다.
+
+```yaml
+# mppi/src/gnss_to_utm/config/csv_to_utm.yaml
+csv_to_utm:
+  ros__parameters:
+    use_sim_time: true
+    csv_file_path: "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_1_10cm.csv"
+```
+
+---
+
+#### 전체 흐름 요약
+
+```text
+① ros2 bag record /carla/car/f9r/fix
+        │  (주행 중 GNSS NavSatFix 녹화)
+        ▼
+   route_1/  (sqlite3 bag)
+        │
+② python3 f9r_to_csv.py
+        │  (bag → UTM 변환, 점 간격 ~1 m)
+        ▼
+   route_1.csv  [X(E/m), Y(N/m)]
+        │
+③ python3 csv_interpolater.py route_1.csv route_1_10cm.csv
+        │  (cubic spline 보간 + 10 cm 등간격 재샘플링)
+        ▼
+   route_1_10cm.csv  [X(E/m), Y(N/m), 10 cm 간격]
+        │
+④ csv_to_utm.yaml 의 csv_file_path 업데이트
+        │
+        ▼
+   csv_to_utm 노드 → /csv_path (nav_msgs/Path) 발행
+        │
+        ▼
+   follow_path_client → FollowPath action → MPPI 추종 시작
+```
+
+---
+
+### 10.3 Nav2 설치
+
+Nav2 패키지는 apt를 통해 설치 완료되어 있다 (10.1 MPPI 구성 항목 참고). 소스 빌드나 커스터마이징이 필요한 경우 방법 B를 참고한다.
+
+#### 방법 A — apt 설치 (권장, 빠름)
+
+```bash
+sudo apt update
+sudo apt install \
+  ros-humble-nav2-controller \
+  ros-humble-nav2-mppi-controller \
+  ros-humble-nav2-costmap-2d \
+  ros-humble-nav2-core \
+  ros-humble-nav2-util \
+  ros-humble-nav2-msgs \
+  ros-humble-nav2-bringup
+```
+
+설치 확인:
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 pkg list | grep nav2_mppi_controller
+# nav2_mppi_controller
+```
+
+#### 방법 B — 소스 빌드 (커스텀 수정 필요 시)
+
+```bash
+cd ~/carla/navigation2
+source /opt/ros/humble/setup.bash
+
+# 의존성 설치
+rosdep install --from-paths . --ignore-src -r -y
+
+# 빌드 (시간이 오래 걸림, 별도 워크스페이스 권장)
+colcon build --packages-select \
+  nav2_msgs nav2_core nav2_util nav2_costmap_2d \
+  nav2_controller nav2_mppi_controller \
+  --symlink-install
+
+source install/setup.bash
+```
+
+---
+
+### 10.4 CARLA + MPPI 실행 매뉴얼
+
+dual_filter 스택이 빌드된 상태이고 Nav2가 설치된 상태를 전제로 한다. 각 구성 파일의 상세 내용은 섹션 10.1.1–10.1.3을 참고한다.
+
+#### 10.4.1 전체 실행 순서
+
+아래 순서를 정확히 따라야 한다. 특히 `ros2_sensor.py`가 `/clock`을 먼저 발행해야 EKF 시간 동기화가 올바르게 동작한다.
+
+```text
+터미널 1: CARLA 시뮬레이터
+터미널 2: manual_control (맵 로드 + 차량 스폰)
+터미널 3: ros2_sensor.py (/clock + 센서 토픽)
+터미널 4: dual_filter launch (EKF + GNSS 파이프라인)
+터미널 5: csv_to_utm launch (경로 파일 → /csv_path)
+터미널 6: controller_server (Nav2 MPPI)
+터미널 7: cmd_vel_to_carla (MPPI → CARLA 제어)
+터미널 8: follow_path_client (경로 추종 시작)
+```
+
+##### 터미널 1 — CARLA 시뮬레이터
+
+```bash
+cd ~/carla
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
+  ./CarlaUE4.sh -RenderOffScreen -quality-level=Low --ros2
+```
+
+##### 터미널 2 — 차량 스폰
+
+```bash
+cd ~/carla
+source .venv/bin/activate
+python PythonAPI/util/config.py --map Town01_Opt
+python PythonAPI/examples/manual_control.py \
+  --rolename car --filter vehicle.micro.microlino --generation 2 --sync
+```
+
+##### 터미널 3 — 센서 브리지 (`/clock` 포함)
+
+```bash
+cd ~/carla
+source /opt/ros/humble/setup.bash
+source .venv/bin/activate
+python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
+  -f PythonAPI/examples/ros2_sensor/stack.json \
+  --attach-existing --passive --python-ros2 \
+  --base-frame base_link --wait-for-vehicle 30 \
+  --sensors f9r f9p imu lidar_2d
+```
+
+##### 터미널 4 — Dual Filter (EKF + GNSS)
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/carla/mppi/install/setup.bash
+ros2 launch dual_filter dual_filter.launch.py
+```
+
+##### 터미널 5 — 경로 파일 → `/csv_path`
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/carla/mppi/install/setup.bash
+# csv_to_utm.yaml에서 csv_file_path를 실제 경로로 설정 후:
+ros2 launch gnss_to_utm csv_to_utm.launch.py
+```
+
+##### 터미널 6 — Nav2 controller_server (MPPI)
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/carla/mppi/install/setup.bash
+ros2 run nav2_controller controller_server \
+  --ros-args \
+  --params-file ~/carla/mppi/src/dual_filter/config/nav2_carla_params.yaml \
+  -p use_sim_time:=true
+```
+
+##### 터미널 7 — `cmd_vel` → CARLA 제어
+
+```bash
+cd ~/carla
+source /opt/ros/humble/setup.bash
+source ~/carla/mppi/install/setup.bash
+source .venv/bin/activate
+ros2 run dual_filter cmd_vel_to_carla \
+  --ros-args -p use_sim_time:=true \
+  -- --rolename car --wheelbase 1.47
+```
+
+##### 터미널 8 — 경로 추종 시작
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/carla/mppi/install/setup.bash
+ros2 run dual_filter follow_path_client
+```
+
+#### 10.4.2 동작 확인
+
+```bash
+# MPPI가 cmd_vel을 발행하는지 확인
+ros2 topic echo /cmd_vel
+
+# FollowPath action 상태 확인
+ros2 action list
+ros2 action info /follow_path
+
+# MPPI trajectory 시각화 (visualize: true 설정 시)
+ros2 topic echo /trajectories --no-arr
+
+# TF tree 전체 확인
+ros2 run tf2_tools view_frames
+
+# costmap 발행 확인
+ros2 topic hz /local_costmap/costmap
+```
+
+#### 10.4.3 최소 실행 (costmap 없이 경로 추종만 테스트)
+
+장애물 회피 없이 경로 추종 기능만 먼저 테스트하려면 `nav2_carla_params.yaml`의 `obstacle_layer`를 비활성화하고 critics에서 `CostCritic`을 제거한다.
+
+```yaml
+# nav2_carla_params.yaml 수정:
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["inflation_layer"]   # obstacle_layer 제거
+
+# FollowPath.critics 수정:
+critics:
+  [
+    "ConstraintCritic",
+    "GoalCritic",
+    "GoalAngleCritic",
+    "PathAlignCritic",
+    "PathFollowCritic",
+    "PathAngleCritic",
+    "PreferForwardCritic",
+  ]
+  # CostCritic 제거 (costmap 없이 동작 가능)
+```
+
+이 구성으로 터미널 6-8만 실행하면 costmap 없이 경로 추종을 테스트할 수 있다.
+
+---
+
+### 10.5 튜닝 가이드
+
+#### 차량별 필수 수정 파라미터
+
+| 파라미터 | 위치 | 설명 | 확인 방법 |
+| :--- | :--- | :--- | :--- |
+| `min_turning_r` | `nav2_carla_params.yaml` | 차량 최소 회전반경 (m) | CARLA에서 최대 조향으로 원 주행 후 반경 측정 |
+| `vx_max` | `nav2_carla_params.yaml` | 안전 최고 속도 (m/s) | 실험적으로 결정 |
+| `WHEELBASE` | `cmd_vel_to_carla.py` | 차량 축간거리 (m) | CARLA 차량 blueprint 확인 |
+| 최대 조향각 | `cmd_vel_to_carla.py` | `steer_rad / math.radians(?)` | CARLA 차량 blueprint 확인 |
+| `inflation_radius` | `nav2_carla_params.yaml` | 장애물 팽창 반경 | 차량 폭의 1.5배에서 시작 |
+
+#### MPPI 조향 진동 발생 시
+
+```yaml
+# wz_std를 줄여 yaw rate 샘플링 분산을 줄인다
+wz_std: 0.2   # 기본값 0.3 → 0.2로 감소
+
+# PathAngleCritic 가중치를 낮춘다
+PathAngleCritic:
+  cost_weight: 1.0   # 2.0 → 1.0
+```
+
+#### 경로 추종이 느릴 때
+
+```yaml
+# PathFollowCritic offset을 늘려 더 먼 waypoint를 향해 가속
+PathFollowCritic:
+  offset_from_furthest: 8   # 5 → 8
+
+# 또는 vx_max를 높임
+vx_max: 8.0
+```

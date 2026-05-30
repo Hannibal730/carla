@@ -11,9 +11,9 @@ from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
 
 
-class OdomPathPublisher(Node):
+class PathVisualizer(Node):
     def __init__(self):
-        super().__init__('odom_path_publisher')
+        super().__init__('path_visualizer')
         self.declare_parameter('odom_topic', '/odometry/local')
         self.declare_parameter('path_topic', '/path/local')
         self.declare_parameter('frame_id', 'odom')
@@ -27,7 +27,7 @@ class OdomPathPublisher(Node):
 
         self.create_subscription(Odometry, odom_topic, self._cb, 10)
         self._pub = self.create_publisher(Path, path_topic, 10)
-        self.get_logger().info(f'odom_path_publisher: {odom_topic} → {path_topic}')
+        self.get_logger().info(f'path_visualizer: {odom_topic} → {path_topic}')
 
     def _cb(self, msg: Odometry) -> None:
         pose = PoseStamped()
@@ -41,7 +41,7 @@ class OdomPathPublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = OdomPathPublisher()
+    node = PathVisualizer()
     rclpy.spin(node)
     rclpy.shutdown()
 

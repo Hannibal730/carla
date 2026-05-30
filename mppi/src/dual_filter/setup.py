@@ -23,8 +23,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'utm_to_odometry = dual_filter.utm_to_odometry:main',
-            'odom_path_publisher = dual_filter.odom_path_publisher:main',
+            'gnss_to_odom = dual_filter.gnss_to_odom:main',
+            'path_visualizer = dual_filter.path_visualizer:main',
+            'cmd_vel_to_carla = dual_filter.cmd_vel_to_carla:main',
+            'follow_path_client = dual_filter.follow_path_client:main',
         ],
     },
 )

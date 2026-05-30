@@ -1,7 +1,7 @@
 """
 Dual Filter Architecture Launch File — REP-105
 =============================================
-TF tree:  map ──[global_ekf]──> odom ──[local_ekf]──> base_link
+TF tree:  utm ──[global_ekf]──> odom ──[local_ekf]──> base_link
 
 Topic remappings:
   CARLA                        →  Internal
@@ -10,7 +10,7 @@ Topic remappings:
   /carla/car/f9p/fix           →  /f9p/fix           (f9p_to_utm)
 
 Prerequisites:
-  - ros2_sensor.py running with --python-ros2 flag  (publishes /wheel/odom)
+  - ros2_sensor.py running with --python-ros2 flag  (publishes /odometry/wheel)
   - sudo apt install ros-humble-robot-localization
 """
 import os
@@ -67,10 +67,10 @@ def generate_launch_description():
     # ------------------------------------------------------------------
     # Node 2d: UTM + azimuth → /odometry/gnss  (bridge for global EKF)
     # ------------------------------------------------------------------
-    utm_to_odom = Node(
+    gnss_to_odom = Node(
         package='dual_filter',
-        executable='utm_to_odometry',
-        name='utm_to_odometry',
+        executable='gnss_to_odom',
+        name='gnss_to_odom',
         output='screen',
         parameters=[sim_time_param],
     )
@@ -92,7 +92,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # Node 3: Global EKF  →  /odometry/global  +  map → odom TF
+    # Node 3: Global EKF  →  /odometry/global  +  utm → odom TF
     #   /imu/data is remapped from /carla/car/imu/data
     # ------------------------------------------------------------------
     global_ekf = Node(
@@ -112,7 +112,7 @@ def generate_launch_description():
     # ------------------------------------------------------------------
     odom_path = Node(
         package='dual_filter',
-        executable='odom_path_publisher',
+        executable='path_visualizer',
         name='odom_path_publisher',
         output='screen',
         parameters=[sim_time_param, {
@@ -123,32 +123,32 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # Node 4b: GNSS path  →  /path/gnss  (raw GNSS/dual-GNSS odometry, map frame)
+    # Node 4b: GNSS path  →  /path/gnss  (raw GNSS/dual-GNSS odometry, utm frame)
     # ------------------------------------------------------------------
     gnss_path = Node(
         package='dual_filter',
-        executable='odom_path_publisher',
+        executable='path_visualizer',
         name='gnss_path_publisher',
         output='screen',
         parameters=[sim_time_param, {
             'odom_topic': '/odometry/gnss',
             'path_topic': '/path/gnss',
-            'frame_id':   'map',
+            'frame_id':   'utm',
         }],
     )
 
     # ------------------------------------------------------------------
-    # Node 4c: Global EKF path  →  /path/global_ekf  (fused odometry, map frame)
+    # Node 4c: Global EKF path  →  /path/global_ekf  (fused odometry, utm frame)
     # ------------------------------------------------------------------
     global_ekf_path = Node(
         package='dual_filter',
-        executable='odom_path_publisher',
+        executable='path_visualizer',
         name='global_ekf_path_publisher',
         output='screen',
         parameters=[sim_time_param, {
             'odom_topic': '/odometry/global',
             'path_topic': '/path/global_ekf',
-            'frame_id':   'map',
+            'frame_id':   'utm',
         }],
     )
 
@@ -156,7 +156,7 @@ def generate_launch_description():
         f9r_to_utm,
         f9p_to_utm,
         azimuth_calc,
-        utm_to_odom,
+        gnss_to_odom,
         local_ekf,
         global_ekf,
         odom_path,

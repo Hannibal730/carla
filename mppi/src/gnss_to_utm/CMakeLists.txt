@@ -45,10 +45,10 @@ target_include_directories(f9p_to_utm PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-# tf_gnss_csv_node executable
-add_executable(tf_gnss_csv_node src/tf_gnss_csv.cpp)
-ament_target_dependencies(tf_gnss_csv_node rclcpp nav_msgs std_msgs geometry_msgs visualization_msgs tf2_ros tf2_geometry_msgs)
-target_include_directories(tf_gnss_csv_node PUBLIC
+# csv_to_utm executable
+add_executable(csv_to_utm src/csv_to_utm.cpp)
+ament_target_dependencies(csv_to_utm rclcpp geometry_msgs nav_msgs)
+target_include_directories(csv_to_utm PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
@@ -65,7 +65,7 @@ target_include_directories(azimuth_angle_calculator_node PUBLIC
 install(TARGETS
   f9r_to_utm
   f9p_to_utm
-  tf_gnss_csv_node
+  csv_to_utm
   azimuth_angle_calculator_node
   DESTINATION lib/${PROJECT_NAME}
 )

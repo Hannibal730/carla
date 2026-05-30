@@ -1,6 +1,6 @@
 # =============================================================================
 # Dual EKF parameters — REP-105 compliant
-#   map → odom  : global_ekf  (world_frame: map)
+#   utm → odom  : global_ekf  (world_frame: utm)
 #   odom → base_link : local_ekf (world_frame: odom)
 #
 # Topic remappings are handled in dual_filter.launch.py:
@@ -9,7 +9,7 @@
 
 # -----------------------------------------------------------------------------
 # Node 1: Local EKF  —  smooth, GNSS-free odometry for MPPI controller
-#   Inputs : /wheel/odom (vx, vy=0)  +  /imu/data (wz)
+#   Inputs : /odometry/wheel (vx, vy=0)  +  /imu/data (wz)
 #   Output : /odometry/local  +  odom → base_link TF
 # -----------------------------------------------------------------------------
 local_ekf:
@@ -19,14 +19,14 @@ local_ekf:
     two_d_mode: true
     publish_tf: true
 
-    map_frame:       map
+    map_frame:       utm
     odom_frame:      odom
     base_link_frame: base_link
     world_frame:     odom        # local EKF lives in odom frame
 
-    # /wheel/odom  — vx (linear.x) + non-holonomic vy=0 constraint
+    # /odometry/wheel  — vx (linear.x) + non-holonomic vy=0 constraint
     # config: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    odom0: /wheel/odom
+    odom0: /odometry/wheel
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -53,8 +53,8 @@ local_ekf:
 
 # -----------------------------------------------------------------------------
 # Node 3: Global EKF  —  GNSS drift correction, absolute position for path tracking
-#   Inputs : /wheel/odom (vx, vy=0)  +  /imu/data (wz)  +  /odometry/gnss (x, y, yaw)
-#   Output : /odometry/global  +  map → odom TF
+#   Inputs : /odometry/wheel (vx, vy=0)  +  /imu/data (wz)  +  /odometry/gnss (x, y, yaw)
+#   Output : /odometry/global  +  utm → odom TF
 # -----------------------------------------------------------------------------
 global_ekf:
   ros__parameters:
@@ -63,13 +63,13 @@ global_ekf:
     two_d_mode: true
     publish_tf: true
 
-    map_frame:       map
+    map_frame:       utm
     odom_frame:      odom
     base_link_frame: base_link
-    world_frame:     map         # global EKF lives in map frame → publishes map→odom TF
+    world_frame:     utm         # global EKF lives in utm frame → publishes utm→odom TF
 
-    # /wheel/odom  — vx (linear.x) + non-holonomic vy=0 constraint
-    odom0: /wheel/odom
+    # /odometry/wheel  — vx (linear.x) + non-holonomic vy=0 constraint
+    odom0: /odometry/wheel
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,

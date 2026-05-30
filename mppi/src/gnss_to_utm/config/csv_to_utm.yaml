@@ -1,0 +1,12 @@
+csv_to_utm:
+  ros__parameters:
+
+    # f9r_to_csv.py 로 생성한 CSV 경로
+    # bag 기록: ros2 bag record -o gnss_data/ros2bag/<name> /carla/car/f9r/fix
+    # CSV 생성: python src/f9r_to_csv.py → gnss_data/csv/<name>.csv
+
+    # route_1
+    csv_file_path: "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_1.csv"
+
+    # route_2
+    # csv_file_path: "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_2.csv"

@@ -1,6 +1,6 @@
 """
 /f9r_utm (PointStamped)  +  /azimuth_angle (Float64, degrees, geo N=0 CW+)
-→  /odometry/gnss (Odometry, CARLA-aligned ROS map frame)
+→  /odometry/gnss (Odometry, CARLA-aligned ROS utm frame)
 
 Conversion:  yaw_enu = π/2 − bearing_deg × π/180
 CARLA uses +Y to the vehicle's right, while ROS uses +Y left. Mirror the
@@ -8,9 +8,9 @@ UTM northing axis and yaw so the GNSS path matches the local ROS odometry
 and the CARLA simulator's apparent turn direction.
 
 The first received UTM fix is stored as the datum origin so that the
-map frame starts at (0, 0) — matching the odom frame convention used by
+utm frame starts at (0, 0) — matching the odom frame convention used by
 the local EKF.  Without this subtraction, raw UTM coordinates (~300 000 m
-easting / ~4 000 000 m northing) would place the map origin hundreds of
+easting / ~4 000 000 m northing) would place the utm origin hundreds of
 kilometres from the local odom origin, making the global path appear
 completely offset in RViz.
 """
@@ -18,24 +18,35 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (QoSProfile, QoSDurabilityPolicy,
+                       QoSReliabilityPolicy, QoSHistoryPolicy)
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64
 
 
-class UtmToOdometry(Node):
+class GnssToOdom(Node):
     def __init__(self):
-        super().__init__('utm_to_odometry')
+        super().__init__('gnss_to_odom')
 
         self._azimuth_deg: float | None = None  # geographic bearing, degrees, N=0 CW+
-        self._datum_x: float | None = None      # first UTM easting  (map origin)
-        self._datum_y: float | None = None      # first UTM northing (map origin)
+        self._datum_x: float | None = None      # first UTM easting  (utm origin)
+        self._datum_y: float | None = None      # first UTM northing (utm origin)
 
         self.create_subscription(PointStamped, '/f9r_utm', self._utm_cb, 10)
         self.create_subscription(Float64, '/azimuth_angle', self._azimuth_cb, 10)
         self._pub = self.create_publisher(Odometry, '/odometry/gnss', 10)
 
-        self.get_logger().info('utm_to_odometry node started.')
+        # transient_local: 늦게 시작하는 csv_to_utm 에게도 datum 재전송 보장
+        _datum_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._datum_pub = self.create_publisher(PointStamped, '/utm_datum', _datum_qos)
+
+        self.get_logger().info('gnss_to_odom node started.')
 
     def _azimuth_cb(self, msg: Float64) -> None:
         self._azimuth_deg = msg.data
@@ -46,15 +57,22 @@ class UtmToOdometry(Node):
                 'Waiting for /azimuth_angle …', throttle_duration_sec=5.0)
             return
 
-        # Latch first fix as datum so map frame starts at (0, 0)
+        # Latch first fix as datum so utm frame starts at (0, 0)
         if self._datum_x is None:
             self._datum_x = msg.point.x
             self._datum_y = msg.point.y
             self.get_logger().info(
                 f'UTM datum set: easting={self._datum_x:.2f}, northing={self._datum_y:.2f}')
+            # /utm_datum 발행 (transient_local) → csv_to_utm 이 언제 시작해도 수신 보장
+            datum_msg = PointStamped()
+            datum_msg.header.stamp = msg.header.stamp
+            datum_msg.header.frame_id = 'utm'
+            datum_msg.point.x = self._datum_x
+            datum_msg.point.y = self._datum_y
+            self._datum_pub.publish(datum_msg)
 
         # Geographic bearing (N=0, CW+, deg) → ENU yaw, then mirror Y for
-        # CARLA's left-handed map convention into ROS base_link (Y-left).
+        # CARLA's left-handed coordinate convention into ROS base_link (Y-left).
         yaw = -math.radians(90.0 - self._azimuth_deg)
         yaw = math.atan2(math.sin(yaw), math.cos(yaw))  # normalise to [-π, π]
 
@@ -63,7 +81,7 @@ class UtmToOdometry(Node):
 
         odom = Odometry()
         odom.header.stamp = msg.header.stamp
-        odom.header.frame_id = 'map'
+        odom.header.frame_id = 'utm'
         odom.child_frame_id = 'base_link'
 
         odom.pose.pose.position.x = msg.point.x - self._datum_x
@@ -91,7 +109,7 @@ class UtmToOdometry(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = UtmToOdometry()
+    node = GnssToOdom()
     rclpy.spin(node)
     rclpy.shutdown()
 
