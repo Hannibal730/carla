@@ -1114,3 +1114,196 @@ MPPI output
 5. motion_model = ackermann 및 제약 튜닝
 6. cmd_vel을 CARLA VehicleControl로 변환
 ```
+
+---
+
+## 9. 실제 하드웨어 휠 오도메트리 구현
+
+CARLA 시뮬레이션에서는 `ros2_sensor.py`가 `/wheel/odom`을 직접 발행한다(Section 6.3). 실제 하드웨어에서는 이 역할을 `serial_bridge` 노드가 대신한다. 아두이노가 전륜 엔코더와 POT 조향각 센서 데이터를 시리얼로 전송하고, `serial_bridge`가 이를 파싱하여 자전거 모델 보정을 적용한 뒤 `/wheel/odom`으로 발행한다.
+
+### 9.1 전륜 엔코더와 조향각 보정의 필요성
+
+차량의 구동 모터와 조향 모터는 독립적이지만, 전륜 엔코더가 측정하는 속도는 **조향각의 영향을 받는다**.
+
+```text
+[자전거 모델 기준 차량 운동학]
+
+후륜(차량 중심축 기준):
+  v_rear  = 차량의 실제 전진 속도
+
+전륜(조향된 상태):
+  전륜은 조향각 δ만큼 꺾여있으므로, 전진 방향으로 투영되는 속도는
+  v_encoder = v_rear / cos(δ)
+
+  → 조향각이 클수록 엔코더가 더 큰 속도를 측정함
+  → δ = 0°일 때 : v_encoder = v_rear        (직진, 동일)
+  → δ = 30°일 때: v_encoder = v_rear / 0.866 = v_rear × 1.155 (15.5% 과대 측정)
+```
+
+따라서 EKF에 입력할 실제 후륜축 속도를 구하려면:
+
+```text
+v_rear = v_encoder × cos(δ)
+```
+
+이 보정을 위해 실제 조향각 δ가 필요하다. MPPI가 출력하는 **조향 명령(SA)** 을 쓰면 순환 의존성(Ouroboros)이 생기지만, **POT(가변저항)가 측정하는 실제 조향각(PS)** 은 MPPI와 독립적이므로 이 문제가 없다.
+
+### 9.2 아두이노 시리얼 프로토콜
+
+파일: `/home/hannibal/carla/final.ino`
+
+시리얼 통신 방향에 따라 키워드가 구분된다.
+
+| 방향 | 키워드 | 형식 | 의미 |
+| :--- | :--- | :--- | :--- |
+| ROS2 → 아두이노 | `TH` | `TH <float>\n` | 쓰로틀 명령 (−1.0 ~ 1.0) |
+| ROS2 → 아두이노 | `SA` | `SA <float>\n` | 조향 명령, 도° (Steering Angle command) |
+| 아두이노 → ROS2 | `VX` | `\| VX:<float>` | 전륜 엔코더 선속도, m/s (보정 전 raw) |
+| 아두이노 → ROS2 | `PS` | `\| PS:<float>` | POT 측정 실제 조향각, 도° (POT Steering) |
+
+아두이노 시리얼 출력 한 줄 예시 (100ms 주기):
+
+```text
+TH:0.000 | SA:0.00 | Enc:1234 | VX:0.5123 | PS:-8.45
+```
+
+#### 아두이노 측 핵심 상수 및 계산
+
+```cpp
+#define ENCODER_PPR     360    // 엔코더 1회전당 펄스 수 (실제 하드웨어 값으로 수정 필요)
+#define WHEEL_RADIUS_M  0.135f // 타이어 반지름, m (실측값)
+
+// 100ms 주기 시리얼 블록에서:
+float dt_odom_s = (float)(now_ms - lp) / 1000.0f;   // 이전 출력 이후 경과 시간 (s)
+long  d_encoder = encoder_count - prev_encoder;       // 경과 시간 동안의 펄스 변화량
+float v_wheel_ms = (float)d_encoder
+                   * (2.0f * PI * WHEEL_RADIUS_M)
+                   / ((float)ENCODER_PPR * dt_odom_s); // 엔코더 선속도 (m/s)
+
+Serial.print(" | VX:"); Serial.print(v_wheel_ms, 4);
+Serial.print(" | PS:"); Serial.println(raw_deg, 2);   // raw_deg: 데드밴드 미적용 조향각
+```
+
+`raw_deg`(데드밴드 미적용)을 PS로 내보내는 이유: 소각도에서도 `cos(δ)` 보정이 필요하므로, 데드밴드로 0이 된 `deg` 대신 실측값 그대로를 사용한다.
+
+#### 쿼드러처 엔코더 채널 설명
+
+`ENCODER_A`와 `ENCODER_B`는 하나의 엔코더 센서의 두 채널이다. A채널이 인터럽트를 발생시키고, B채널의 상태로 회전 방향을 판별한다.
+
+```cpp
+void encoderISR() {
+    if (digitalRead(ENCODER_B) == HIGH) encoder_count++;  // 전진
+    else                                 encoder_count--;  // 후진
+}
+```
+
+### 9.3 시리얼 브리지 (`serial_bridge`) 구현
+
+파일: `mppi/src/serial_bridge/serial_bridge/serial_bridge.py`
+
+패키지: `mppi/src/serial_bridge/`
+
+#### 역할
+
+| 방향 | 동작 |
+| :--- | :--- |
+| `/auto_throttle` → 아두이노 | Float32 수신 → `TH <val>\n` 시리얼 전송 |
+| `/auto_steer_angle` → 아두이노 | Float32 수신 → `SA <val>\n` 시리얼 전송 |
+| 아두이노 → `/wheel/odom` | 시리얼 수신 → VX/PS 파싱 → 보정 → Odometry 발행 |
+
+#### 핵심 처리 흐름
+
+```text
+아두이노 시리얼 한 줄 수신
+  "... | VX:0.5123 | PS:-8.45"
+         ↓ _parse_field()
+  vx_raw = 0.5123 m/s
+  ps_deg = -8.45°
+         ↓ _publish_wheel_odom()
+  v_rear = 0.5123 × cos(−8.45° × π/180)
+         = 0.5123 × 0.9892
+         = 0.5068 m/s
+         ↓
+  /wheel/odom.twist.twist.linear.x = 0.5068
+  /wheel/odom.twist.twist.linear.y = 0.0   (비홀로노믹 제약)
+         ↓
+  local_ekf / global_ekf odom0 입력
+```
+
+#### 발행 메시지 상세
+
+```python
+msg = Odometry()
+msg.header.frame_id = 'odom'
+msg.child_frame_id  = 'base_link'
+msg.twist.twist.linear.x  = v_rear   # 후륜축 전방 속도 (m/s)
+msg.twist.twist.linear.y  = 0.0      # 비홀로노믹 제약
+msg.twist.twist.angular.z = 0.0      # yaw rate는 IMU에서 별도 공급
+```
+
+공분산 설정 (Section 6.3의 CARLA 구성과 동일):
+
+| 인덱스 (6×6 행렬) | 값 | 의미 |
+| :--- | :--- | :--- |
+| `[0]` (vx 분산) | `0.05` | 엔코더+보정 기준 vx 신뢰도 |
+| `[7]` (vy 분산) | `0.01` | vy=0 비홀로노믹 제약, 강하게 신뢰 |
+| `[35]` (wz 분산) | `1e6` | yaw rate는 이 토픽에서 사용 안 함 |
+
+#### 시리얼 포트 파라미터
+
+```yaml
+serial_bridge:
+  ros__parameters:
+    port: /dev/arduino_bridge   # udev 심볼릭 링크 또는 /dev/ttyUSB0
+    baud: 57600
+    throttle_topic: /auto_throttle
+    steer_cmd_topic: /auto_steer_angle
+    startup_silence_sec: 3.0    # 시작 직후 아두이노 초기화 동안 송신 차단
+```
+
+### 9.4 CARLA 시뮬레이션과 실제 하드웨어의 `/wheel/odom` 비교
+
+| 항목 | CARLA 시뮬레이션 (ros2_sensor.py) | 실제 하드웨어 (serial_bridge) |
+| :--- | :--- | :--- |
+| vx 원천 | CARLA world velocity → base_link 투영 | 전륜 엔코더 펄스 → 선속도 변환 |
+| 조향 보정 | 불필요 (CARLA가 직접 후륜축 기준 속도 제공) | 필요: v_rear = v_encoder × cos(δ) |
+| 조향각 원천 | 없음 | POT 측정 실측값 (raw_deg, PS) |
+| 타임스탬프 | CARLA simulation time (/clock) | ROS2 wall time (get_clock().now()) |
+| 발행 노드 | `ros2_sensor.py` | `serial_bridge` |
+| 패키지 위치 | `PythonAPI/examples/ros2_sensor/` | `mppi/src/serial_bridge/` |
+
+> **주의:** 실제 하드웨어 실행 시 `use_sim_time: false`로 설정해야 한다. CARLA 시뮬레이션에서만 `use_sim_time: true`를 사용한다. 두 환경을 혼합하면 EKF 적분 시간 오류가 발생한다.
+
+### 9.5 패키지 의존성
+
+`mppi/src/serial_bridge/package.xml`:
+
+```xml
+<depend>rclpy</depend>
+<depend>std_msgs</depend>
+<depend>nav_msgs</depend>   <!-- Odometry 메시지 타입 -->
+```
+
+빌드:
+
+```bash
+cd ~/carla/mppi
+colcon build --packages-select serial_bridge --symlink-install
+source install/setup.bash
+```
+
+실행:
+
+```bash
+ros2 run serial_bridge serial_bridge
+```
+
+### 9.6 ENCODER_PPR 검증
+
+`final.ino`의 `ENCODER_PPR` 값은 실제 하드웨어 엔코더 데이터시트 값으로 반드시 확인해야 한다.
+
+```cpp
+#define ENCODER_PPR 360  // ← 엔코더 1회전당 실제 펄스 수로 수정 필요
+```
+
+검증 방법: 차량 바퀴를 정확히 1바퀴 수동 회전시키면서 `encoder_count` 변화량을 시리얼 모니터로 확인한다. 이 값이 `ENCODER_PPR`과 일치해야 한다.

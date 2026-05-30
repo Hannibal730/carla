@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import math
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
+from nav_msgs.msg import Odometry
 import serial, threading, time
 
 DEFAULT_PORT = '/dev/arduino_bridge'
@@ -43,13 +45,19 @@ class SerialBridge(Node):
         self._rx_th = threading.Thread(target=self._reader_loop, daemon=True)
         self._rx_th.start()
 
-        # 구독자
+        # 구독자 (ROS2 → 아두이노 명령 전송)
         self.create_subscription(Float32, throttle_topic, self.cb_throttle, 10)
         self.create_subscription(Float32, steer_topic, self.cb_steer, 10)
 
+        # 발행자 (아두이노 → ROS2 오도메트리)
+        # 아두이노 시리얼에서 VX(전륜 선속도)와 PS(실제 조향각)를 파싱하여
+        # v_rear = VX × cos(PS × π/180) 로 보정한 뒤 /wheel/odom으로 발행한다.
+        # 이 토픽은 local_ekf / global_ekf 의 odom0 입력으로 사용된다.
+        self._odom_pub = self.create_publisher(Odometry, '/wheel/odom', 10)
+
         self.get_logger().info(
             f"Subscribed to {throttle_topic} and {steer_topic} → Serial({port}@{baud}), "
-            f"startup_silence_sec={self.startup_silence_sec:.1f}s"   # ★
+            f"startup_silence_sec={self.startup_silence_sec:.1f}s"
         )
 
     # 시리얼 열기/재연결 루프
@@ -68,7 +76,67 @@ class SerialBridge(Node):
                     time.sleep(1.0)
             time.sleep(0.1)
 
-    # 수신 루프: 아두이노에서 오는 디버그 문자열을 읽어 ROS 로그로 출력
+    def _parse_field(self, text: str, key: str):
+        """
+        시리얼 한 줄에서 "KEY:value" 형식의 숫자를 파싱한다.
+        예) "... | VX:0.5123 | PS:-8.45 ..." 에서
+            _parse_field(text, "VX") → 0.5123
+            _parse_field(text, "PS") → -8.45
+        해당 키가 없거나 파싱 실패 시 None 반환.
+        """
+        tag = f"{key}:"
+        idx = text.find(tag)
+        if idx == -1:
+            return None
+        start = idx + len(tag)
+        # 값 끝: 공백, '|', 줄끝 중 먼저 오는 위치
+        end = len(text)
+        for ch in (' ', '|', '\r', '\n'):
+            pos = text.find(ch, start)
+            if pos != -1 and pos < end:
+                end = pos
+        try:
+            return float(text[start:end])
+        except ValueError:
+            return None
+
+    def _publish_wheel_odom(self, vx_raw: float, ps_deg: float):
+        """
+        전륜 엔코더 선속도(vx_raw)와 실제 조향각(ps_deg)으로
+        후륜축 기준 선속도를 계산하여 /wheel/odom 을 발행한다.
+
+        보정 공식 (자전거 모델):
+            v_encoder = v_rear / cos(δ)
+            ∴ v_rear  = v_encoder × cos(δ)
+
+        /wheel/odom 은 EKF 의 속도 측정 입력(vx, vy=0)으로만 사용된다.
+        pose 필드는 EKF 가 내부적으로 적분하므로 여기서는 채우지 않는다.
+        """
+        v_rear = vx_raw * math.cos(math.radians(ps_deg))
+
+        msg = Odometry()
+        msg.header.stamp    = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'odom'
+        msg.child_frame_id  = 'base_link'
+
+        msg.twist.twist.linear.x  = v_rear   # 후륜축 전방 속도 (m/s)
+        msg.twist.twist.linear.y  = 0.0      # 비홀로노믹 제약: 횡방향 속도 없음
+        msg.twist.twist.angular.z = 0.0      # yaw rate 는 IMU 에서 별도 공급
+
+        # 공분산 설정 (robot_localization 에서 측정값 가중치로 사용)
+        # twist.covariance 는 6×6 행렬을 행 우선으로 펼친 36개 원소
+        # [0]  = vx 분산:  RTK급 엔코더 기준 ~0.05 m²/s²
+        # [7]  = vy 분산:  vy=0 제약을 강하게 신뢰 → 0.01
+        # [35] = wz 분산:  IMU 에서 따로 오므로 크게 설정 (EKF 가 무시)
+        cov = [0.0] * 36
+        cov[0]  = 0.05   # vx
+        cov[7]  = 0.01   # vy = 0 (비홀로노믹 제약)
+        cov[35] = 1e6    # wz (IMU 에서 공급, 이 토픽에서는 사용 안 함)
+        msg.twist.covariance = cov
+
+        self._odom_pub.publish(msg)
+
+    # 수신 루프: 아두이노에서 오는 시리얼 데이터를 읽어 파싱·발행
     def _reader_loop(self):
         buf = b""
         while not self._stop:
@@ -83,14 +151,24 @@ class SerialBridge(Node):
                     time.sleep(0.01)
                     continue
                 buf += data
-                # \n 기준으로 라인 파싱
                 while b'\n' in buf:
                     line, buf = buf.split(b'\n', 1)
-                    # \r 제거
                     line = line.replace(b'\r', b'')
                     text = line.decode('utf-8', errors='replace')
-                    if text:
+                    if not text:
+                        continue
+
+                    self.get_logger().debug(f"RX: {text}")
+
+                    # VX, PS 가 모두 포함된 줄이면 /wheel/odom 발행
+                    vx = self._parse_field(text, 'VX')
+                    ps = self._parse_field(text, 'PS')
+                    if vx is not None and ps is not None:
+                        self._publish_wheel_odom(vx, ps)
+                    else:
+                        # VX/PS 없는 줄(초기 디버그 줄 등)은 INFO 로그만
                         self.get_logger().info(f"RX: {text}")
+
             except Exception as e:
                 self.get_logger().warn(f"Serial read failed: {e}")
                 with self._ser_lock:
