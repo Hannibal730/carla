@@ -1,17 +1,12 @@
 tf_gnss_csv_node:
   ros__parameters:
 
-    # # 1.
-    # csv_file_path: "/home/hannibal/Mandol_ws/data/processed/1_T_right_P_right_startR.csv"
+    # CARLA 경로 (f9r_to_csv.py로 생성)
+    # bag 기록: ros2 bag record -o gnss_data/ros2bag/<name> /carla/car/f9r/fix
+    # CSV 생성: f9r_to_csv.py 실행 → gnss_data/csv/<name>.csv
 
-    # # 2.
-    # csv_file_path: "/home/hannibal/Mandol_ws/data/processed/2_T_right_P_left.csv"
+    # # route_1
+    csv_file_path: "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_1.csv"
 
-    # # 3.
-    # csv_file_path: "/home/hannibal/Mandol_ws/data/processed/3_T_left_P_right.csv"
-
-    # # 4.
-    csv_file_path: "/home/hannibal/Mandol_ws/data/processed/4_T_left_P_left.csv"
-
-    # # 5.
-    # csv_file_path: "/home/hannibal/Mandol_ws/data/processed/5_pass_startR.csv"
+    # # route_2
+    # csv_file_path: "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_2.csv"

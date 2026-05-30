@@ -23,12 +23,164 @@
 ---
 
 ## 2. 좌표계(TF Tree) 명세 (REP-105 준수)
-시스템은 다음의 계층적 TF 트리를 반드시 유지해야 한다.
-`map` $\rightarrow$ `odom` $\rightarrow$ `base_link`
 
-1.  **`base_link`:** 차량의 뒷바퀴 축 중심(또는 무게중심)을 나타내는 로컬 물리 프레임.
-2.  **`odom`:** 시작 위치를 원점으로 하는 로컬 기준 프레임. 연속적이고 부드러운 궤적을 보장하나 장기 드리프트(Drift)가 존재함. (단기 제어 및 장애물 회피용)
-3.  **`map`:** GNSS 기반의 전역 기준 프레임. 위치의 도약(Jump)이 발생할 수 있으나 지구상의 절대 위치를 보장함. (전역 경로 추종용)
+시스템은 다음의 계층적 TF 트리를 반드시 유지해야 한다.
+
+```
+map ──[global_ekf]──> odom ──[local_ekf]──> base_link
+```
+
+본 시스템에는 EKF 기반 TF 트리(dual_filter 스택)와, 독립적인 GNSS 전용 경로 추종 프레임(`csv`)이 별도로 존재한다. 두 스택은 TF 트리를 공유하지 않는다.
+
+---
+
+### 2.1 `base_link` — 차량 물리 프레임
+
+**원점:** 차량 후륜축 중심. 차량이 움직이면 프레임도 함께 이동한다.
+
+```
+차량이 1m 전진 → base_link 원점도 1m 전진
+차량이 우회전  → base_link 원점도 우회전
+```
+
+- 방향: X = 차량 전방, Y = 좌측(ROS 표준), Z = 위
+- 이 프레임 자체는 "어디에 있는지" 정보를 갖지 않는다. 항상 다른 프레임과의 TF 관계(변환)로만 위치가 정해진다.
+- CARLA는 내부적으로 `+Y=right` 를 사용하므로, `ros2_sensor.py`에서 Y축과 yaw 부호를 반전해 ROS 표준(`+Y=left`)으로 맞춘다.
+
+**TF에서의 역할:** `odom → base_link` 변환이 "출발점에서 차량이 얼마나 이동했는가"를 표현한다.
+
+---
+
+### 2.2 `odom` — 로컬 오도메트리 기준점
+
+**원점:** 시스템을 실행한 순간, 차량이 있던 위치와 방향. 이 원점은 이후 절대로 움직이지 않는다.
+
+```
+시스템 시작 시
+  odom 원점 = 차량의 현재 물리적 위치 (지구상의 어느 한 점)
+  odom → base_link = 항등변환(identity), 즉 차량은 odom 원점 위에 있음
+
+500m 주행 후
+  odom 원점은 여전히 같은 물리적 위치에 고정
+  odom → base_link = 출발점으로부터 500m 이동한 위치
+```
+
+- **발행 주체:** `local_ekf` (`world_frame: odom`, `publish_tf: true`)
+- **계산 방법:** wheel `vx` + IMU `wz`의 적분
+- **장점:** 연속적이고 부드럽다 — GNSS 노이즈나 보정으로 인한 갑작스러운 위치 변화(Jump)가 없다. MPPI 제어기가 이 프레임 기반으로 동작한다.
+- **단점:** 적분 오차가 시간과 함께 누적된다(드리프트). 장거리 주행 후에는 `odom` 원점이 실제 물리 위치와 수 미터 이상 어긋날 수 있다.
+- **사용처:** 단기 제어, MPPI의 `robot_speed` 및 `robot_pose` 기반, 장애물 회피
+
+---
+
+### 2.3 `map` — 전역 절대 기준점
+
+**원점:** `utm_to_odometry.py`에서 설정한 `datum_easting / datum_northing` (UTM 좌표). 이 점이 ROS의 `(0, 0)` map 원점이 된다.
+
+```
+현재 설정 (utm_to_odometry.py):
+  datum_easting  = 첫 번째 f9r GNSS 수신 시의 UTM easting
+  datum_northing = 첫 번째 f9r GNSS 수신 시의 UTM northing
+
+→ datum이 실행마다 달라지므로 map 원점도 실행마다 달라진다.
+  datum을 고정 UTM 값으로 하드코딩하면 map 원점도 항상 일정해진다.
+```
+
+`map` 프레임을 이해하는 핵심은 **`map`이 `odom`을 보정하는 프레임**이라는 것이다.
+
+```
+[이해하기 어려운 이유]
+직관적으로는: map → base_link 하나면 충분하지 않나?
+
+[실제 이유]
+odom → base_link 는 연속적(제어기용)
+map → odom      는 가끔 점프해서 절대 위치 보정
+
+둘을 분리함으로써, GNSS 보정이 제어기에 직접 전달되는 것을 차단한다.
+```
+
+**`map → odom` TF의 물리적 의미:**
+
+```
+initial:  map → odom = 항등변환
+          (map 원점과 odom 원점이 같은 위치)
+
+500m 주행 후 odom이 2m 동쪽으로 드리프트했다면:
+  global_ekf가 GNSS로 실제 위치를 파악
+  → map → odom 오프셋을 2m 서쪽으로 조정
+  → odom → base_link 는 그대로 (제어기에 영향 없음)
+  → map → odom → base_link 합산으로 실제 절대 위치 계산
+```
+
+- **발행 주체:** `global_ekf` (`world_frame: map`, `publish_tf: true`)
+- **계산 방법:** wheel `vx` + IMU `wz` + GNSS UTM `(x,y)` + azimuth yaw의 EKF 융합
+- **장점:** 드리프트가 보정된 절대 위치
+- **단점:** GNSS 업데이트 시 `map → odom` 오프셋이 불연속적으로 변할 수 있다(Jump). 단, 이 Jump는 `odom → base_link`에는 전달되지 않으므로 제어기는 영향을 받지 않는다.
+- **사용처:** 전역 경로 추종, MPPI의 global plan frame
+
+---
+
+### 2.4 `csv` — GNSS 전용 경로 추종 기준점
+
+**원점:** CSV 경로 파일의 **첫 번째 UTM 좌표**. EKF 초기화 여부와 무관하게 항상 동일하다.
+
+```
+경로 파일: route_1.csv
+  첫 번째 행: 355123.45, 4162345.67  ← 이 UTM 좌표가 csv 원점
+  이후 모든 경유점은 이 점에서의 상대 좌표로 변환되어 /csv_path로 발행됨
+
+차량 위치:
+  f9r 안테나의 현재 UTM - csv 원점 = f9r 프레임의 csv 기준 위치
+  tf_gnss_csv 노드가 csv → f9r TF를 브로드캐스트
+```
+
+- **발행 주체:** `tf_gnss_csv` 노드 (`gnss_to_utm` 패키지)
+- **계산 방법:** 원시 f9r/f9p GNSS → UTM 변환 → csv 원점 기준 상대 좌표
+- **EKF와의 관계:** 완전히 독립. `map/odom/base_link` TF 트리와 연결되지 않는다.
+- **장점:** EKF 수렴 여부와 무관하고, 경로 파일이 원점이므로 매 실행마다 일관성이 유지된다.
+- **단점:** IMU/wheel 융합이 없는 순수 GNSS 측위이므로 정밀도가 낮고, GNSS 노이즈가 그대로 위치에 반영된다.
+- **사용처:** `dual_filter` 없이 GNSS만으로 경로 추종할 때 (두 스택을 동시에 실행하면 안 됨)
+
+---
+
+### 2.5 프레임 관계 요약
+
+```
+[dual_filter 스택 — EKF 기반]
+
+  지구상의 절대 위치 (UTM datum 기준)
+       │
+       ▼
+     map ──────────────────────────────── 전역 고정 좌표계
+       │                                  원점: utm_to_odometry.py의 datum
+       │ map → odom TF                    발행: global_ekf
+       │ (GNSS로 드리프트 보정)
+       ▼
+     odom ─────────────────────────────── 출발점 고정 좌표계
+       │                                  원점: 시스템 시작 시 차량 위치
+       │ odom → base_link TF              발행: local_ekf
+       │ (wheel + IMU 연속 적분)
+       ▼
+   base_link ─────────────────────────── 차량 물리 프레임
+                                          원점: 후륜축 중심 (차량과 함께 이동)
+
+
+[gnss_to_utm 스택 — GNSS 전용, 별도 독립]
+
+     csv ──────────────────────────────── 경로 기준 좌표계
+       │                                  원점: CSV 파일 첫 번째 UTM 점
+       │ csv → f9r TF                     발행: tf_gnss_csv
+       │ (raw f9r GNSS 직접 변환)
+       ▼
+     f9r ───────────────────────────────  차량(f9r 안테나) 현재 위치
+```
+
+| 프레임 | 원점 | 이동 여부 | 연속성 | 절대 위치 | 발행 주체 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `base_link` | 후륜축 중심 | 차량과 함께 이동 | 연속 | 없음 | local_ekf |
+| `odom` | 시스템 시작 위치 | 고정 | 연속 (드리프트 있음) | 없음 | local_ekf |
+| `map` | datum UTM 좌표 | 고정 | 가끔 보정(Jump 가능) | 있음 | global_ekf |
+| `csv` | CSV 첫 번째 UTM 점 | 고정 | 연속 (GNSS 노이즈 포함) | 있음(상대적) | tf_gnss_csv |
 
 ---
 
@@ -713,4 +865,252 @@ CARLA Simulator
                          /odometry/local  ─→ /path/odom
                          /odometry/gnss    ─→ /path/gnss
                          /odometry/global ─→ /path/global_ekf
+```
+
+---
+
+## 8. Nav2 MPPI Controller에 필요한 전체 입력과 현재 충족 여부
+
+분석 대상:
+
+```text
+/home/hannibal/carla/navigation2/nav2_mppi_controller
+/home/hannibal/carla/navigation2/nav2_controller
+/home/hannibal/carla/navigation2/nav2_util
+```
+
+결론부터 말하면, `nav2_mppi_controller`는 단독으로 센서 토픽을 직접 구독하는 노드가 아니라 **Nav2 controller server 안에서 실행되는 controller plugin**이다. 따라서 MPPI에 필요한 입력은 controller server가 준비해서 `MPPIController::computeVelocityCommands()`에 넘겨준다.
+
+```text
+controller_server
+  ├─ TF/costmap에서 robot_pose 계산
+  ├─ odom_topic → OdomSmoother → robot_speed 계산
+  ├─ FollowPath action의 global path → path handler → transformed_global_plan 생성
+  ├─ goal checker / progress checker 관리
+  └─ MPPIController::computeVelocityCommands(
+       robot_pose,
+       robot_speed,
+       goal_checker,
+       transformed_global_plan,
+       global_goal)
+```
+
+즉 MPPI가 필요로 하는 것은 단순히 차량 odometry 하나가 아니라, **pose, speed, path, goal, TF, costmap, motion model, critic 설정, cmd_vel 소비자**까지 포함한 전체 Nav2 제어 환경이다.
+
+### 8.1 MPPI Controller의 필수 입력/조건 요약
+
+| 요구사항 | 코드상 형태 | 실제 공급 주체 | 현재 파이프라인 충족 여부 | 권장 설정/조치 |
+| :--- | :--- | :--- | :--- | :--- |
+| 현재 차량 pose | `geometry_msgs/PoseStamped robot_pose` | `controller_server`가 TF/costmap으로 계산 | 충족 가능. `map→odom→base_link` TF가 있음 | Nav2 frame을 `global_frame: map`, `robot_base_frame: base_link` 기준으로 맞춤 |
+| 현재 차량 속도 | `geometry_msgs/Twist robot_speed` | `odom_topic`의 `nav_msgs/Odometry.twist.twist` | 충족. `/odometry/local`이 가장 적합 | `controller_server.odom_topic: /odometry/local` |
+| 로컬 제어용 path | `nav_msgs/Path transformed_global_plan` | `FollowPath` action의 path를 path handler가 변환 | dual filter만으로는 미충족 | Nav2 planner 또는 외부 global path publisher가 FollowPath action에 path 제공 필요 |
+| 최종 goal | `geometry_msgs/PoseStamped global_goal` | FollowPath action / path handler | dual filter만으로는 미충족 | 목표 pose 또는 path 마지막 pose 제공 필요 |
+| goal checker | `nav2_core::GoalChecker *` | `controller_server` plugin | Nav2 설정 필요 | `SimpleGoalChecker`, `StoppedGoalChecker` 등 설정 |
+| progress checker | progress checker plugin | `controller_server` plugin | Nav2 설정 필요 | 주행 중 진행 여부 판단용 plugin 설정 |
+| local costmap | `nav2_costmap_2d::Costmap2DROS` | Nav2 local costmap | 별도 설정 필요 | LiDAR/obstacle layer/inflation layer 구성 필요 |
+| TF buffer | `tf2_ros::Buffer` | Nav2 stack | 충족 가능 | 모든 노드 `use_sim_time:=true`, TF tree 유지 |
+| motion model | `motion_model` parameter | MPPI plugin | 설정으로 충족 | 차량형이면 `ackermann` 권장 |
+| velocity/acceleration limits | `vx_max`, `vx_min`, `wz_max`, `ax_max`, `az_max` 등 | MPPI parameter | 설정 필요 | CARLA 차량 동역학에 맞게 튜닝 |
+| critics | `critics` parameter | MPPI critic plugins | 설정 필요 | path/goal/obstacle 관련 critic 선택 |
+| trajectory validator | `TrajectoryValidator.plugin` | MPPI validator plugin | 기본값 사용 가능 | 기본 `mppi::DefaultOptimalTrajectoryValidator` 사용 가능 |
+| command output | `geometry_msgs/TwistStamped` → `cmd_vel` | controller server publisher | 소비자 별도 필요 | `/cmd_vel`을 CARLA throttle/steer/brake로 변환하는 노드 필요 |
+
+### 8.2 MPPI 내부에서 실제로 쓰는 데이터
+
+`MPPIController::computeVelocityCommands()`가 받는 입력은 다음 5개이다.
+
+| 함수 입력 | 의미 | MPPI 내부 사용 |
+| :--- | :--- | :--- |
+| `robot_pose` | 현재 차량 위치와 yaw | rollout 시작 pose. trajectory 적분의 초기 `x`, `y`, `yaw` |
+| `robot_speed` | 현재 차량 속도 | rollout 시작 속도. `state.speed.linear.x`, `state.speed.angular.z`에 들어감 |
+| `goal_checker` | 목표 도달 판정 | goal 관련 critic/validator에서 사용 |
+| `transformed_global_plan` | 로컬 프레임으로 변환된 path | path follow/align/angle critic이 평가 |
+| `global_goal` | 최종 목표 pose | goal/goal_angle critic이 평가 |
+
+Optimizer 내부에서는 다음처럼 현재 속도와 pose를 초기 상태로 사용한다.
+
+```text
+state.pose = robot_pose
+state.speed = robot_speed
+state.vx.col(0) = state.speed.linear.x
+state.wz.col(0) = state.speed.angular.z
+```
+
+그리고 출력은 다음 형태로 나온다.
+
+```text
+geometry_msgs/TwistStamped cmd_vel
+  header.frame_id = base_link
+  twist.linear.x  = 선택된 vx
+  twist.angular.z = 선택된 wz
+```
+
+holonomic model일 때만 `twist.linear.y`도 출력한다. Ackermann/DiffDrive model에서는 `linear.x`, `angular.z` 중심이다.
+
+### 8.3 `odom_topic`에는 무엇을 넣어야 하는가
+
+`controller_server`는 `odom_topic` 파라미터를 읽어 `nav2_util::OdomSmoother`를 만들고, 매 control loop에서 `getRawTwist()`로 최신 twist를 가져온다.
+
+```text
+odom_topic
+  → nav_msgs/Odometry
+  → twist.twist
+  → getRawTwist()
+  → robot_speed
+  → MPPIController::computeVelocityCommands()
+```
+
+따라서 `odom_topic`의 핵심은 `pose.pose`가 아니라 `twist.twist`이다.
+
+| 후보 topic | `odom_topic` 사용 가능? | 장점 | 문제점 | 판단 |
+| :--- | :--- | :--- | :--- | :--- |
+| `/odometry/local` | 가능 | wheel `vx`, `vy=0`, IMU `wz`가 융합된 연속적 twist. GNSS jump 없음 | 장기 위치 drift는 있지만 MPPI의 현재 속도 입력에는 큰 문제 없음 | **권장** |
+| `/wheel/odom` | 부분 가능 | 전방 속도 `linear.x`가 직접적이고 지연이 작음 | yaw rate를 쓰지 않도록 만든 topic이라 `angular.z`가 부정확하거나 0이 될 수 있음 | 비권장 |
+| `/odometry/global` | 가능은 함 | global EKF 융합 결과 | GNSS 보정 영향이 섞이며 제어용 현재 속도에는 불필요 | 비권장 |
+| `/odometry/gnss` | 부적합 | 절대 위치와 dual GNSS yaw가 있음 | `utm_to_odometry`는 pose 브리지이며 twist를 제공하지 않음 | 사용 금지 |
+
+권장 설정:
+
+```yaml
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+    odom_topic: /odometry/local
+    odom_duration: 0.3
+```
+
+`/odometry/local`은 `/wheel/odom.twist.twist.linear.x`, `linear.y=0`, `/imu/data.angular_velocity.z`를 EKF로 융합하므로 MPPI의 `robot_speed` 입력으로 가장 안정적이다. 또한 `/odometry/local`은 GNSS 보정을 받지 않으므로 제어 루프에 GNSS jump를 전달하지 않는다.
+
+### 8.4 Pose와 TF 요구사항
+
+MPPI의 `robot_pose`는 odometry topic의 pose가 아니라 controller server/costmap/TF 경로에서 들어온다. 따라서 다음 TF가 반드시 살아 있어야 한다.
+
+```text
+map ──> odom ──> base_link
+```
+
+| TF | 발행 주체 | MPPI 관점에서 필요한 이유 | 현재 충족 여부 |
+| :--- | :--- | :--- | :--- |
+| `odom → base_link` | `local_ekf` | local frame에서 차량 pose를 연속적으로 제공 | 충족 |
+| `map → odom` | `global_ekf` | global path/map frame과 local odom frame 연결 | 충족 |
+| `map → base_link` | TF 합성 결과 | global plan을 local control frame으로 변환할 때 필요 | 위 두 TF가 있으면 충족 |
+
+Nav2 costmap frame 설정은 보통 다음 구성이 자연스럽다.
+
+| Nav2 frame parameter | 권장값 | 이유 |
+| :--- | :--- | :--- |
+| `global_frame` | `map` 또는 local costmap에서는 `odom` | global planner/path와 local controller 구성에 따라 선택 |
+| `robot_base_frame` | `base_link` | CARLA 차량 기준 프레임 |
+| `transform_tolerance` | `0.1` 이상에서 시작 | sim time/TF 지연을 흡수 |
+
+중요한 점은 `robot_pose`와 `transformed_global_plan`이 같은 local control 기준에서 일관되게 계산되어야 한다는 것이다.
+
+### 8.5 Path와 Goal 요구사항
+
+MPPI는 path를 직접 만들지 않는다. `controller_server`가 FollowPath action으로 받은 `nav_msgs/Path`를 path handler로 자르고 변환한 뒤 MPPI에 넘긴다.
+
+| 요구사항 | 필요 메시지/객체 | 현재 dual filter가 제공? | 추가 필요 |
+| :--- | :--- | :--- | :--- |
+| 추종할 global path | `nav_msgs/Path` | 아니오. `/path/gnss`, `/path/global_ekf`는 시각화용 주행 궤적임 | planner 또는 별도 path publisher |
+| path frame | 보통 `map` | 가능 | path header frame과 TF tree 일치 필요 |
+| 최종 goal | path 마지막 pose 또는 action goal | 아니오 | FollowPath action goal 제공 |
+| transformed local plan | controller server 내부 생성 | Nav2가 생성 | TF와 path가 정상이어야 함 |
+
+주의: `/path/odom`, `/path/gnss`, `/path/global_ekf`는 RViz에서 실제 주행 궤적을 확인하기 위한 출력이다. 이들은 “따라가야 할 계획 경로”가 아니라 “이미 지나온 경로 기록”이므로 MPPI의 global plan으로 넣으면 안 된다.
+
+### 8.6 Costmap과 장애물 정보
+
+MPPI는 critics를 통해 trajectory cost를 계산하고, obstacle 관련 critic은 local costmap을 사용한다. 따라서 장애물 회피까지 하려면 local costmap이 필요하다.
+
+| 요구사항 | 현재 파이프라인 충족 여부 | 추가 필요 |
+| :--- | :--- | :--- |
+| local costmap | 별도 설정 필요 | Nav2 local_costmap 구성 |
+| obstacle layer 입력 | 가능성 있음 | `/carla/car/lidar/point_cloud` 또는 2D LiDAR topic을 costmap observation source로 연결 |
+| inflation layer | 별도 설정 필요 | 차량 footprint와 inflation radius 튜닝 |
+| robot footprint | 별도 설정 필요 | CARLA 차량 크기에 맞는 footprint 설정 |
+
+costmap 없이도 목표 추종만 실험할 수는 있지만, `CostCritic`, `ObstaclesCritic`을 제대로 쓰려면 costmap 구성이 필수다.
+
+### 8.7 Motion Model과 차량 제약
+
+`nav2_mppi_controller`는 세 가지 motion model plugin을 제공한다.
+
+| motion model | plugin | 특성 | CARLA 차량에 대한 판단 |
+| :--- | :--- | :--- | :--- |
+| `diff_drive` | `mppi::DiffDriveMotionModel` | `vx`, `wz` 사용. 회전반경 제약 없음 | 임시 실험 가능 |
+| `ackermann` | `mppi::AckermannMotionModel` | `vx`, `wz` 사용. `min_turning_r`로 회전반경 제한 | **권장** |
+| `omni` | `mppi::OmniMotionModel` | `vx`, `vy`, `wz` 사용 | 일반 차량에는 부적합 |
+
+CARLA 일반 차량은 lateral velocity를 독립적으로 명령할 수 없으므로 `omni`는 맞지 않는다. 차량형 플랫폼에서는 `ackermann`을 쓰고, 실제 최소 회전반경에 맞춰 `min_turning_r`를 조정하는 것이 좋다.
+
+```yaml
+FollowPath:
+  plugin: "nav2_mppi_controller::MPPIController"
+  motion_model: "ackermann"
+  ackermann:
+    plugin: "mppi::AckermannMotionModel"
+    min_turning_r: 3.0
+```
+
+### 8.8 MPPI 주요 파라미터
+
+| 파라미터 | 의미 | 현재 시스템에서의 주의점 |
+| :--- | :--- | :--- |
+| `controller_frequency` | controller server loop 주파수 | `/odometry/local` publish rate보다 낮거나 같게 시작. 예: 30Hz |
+| `model_dt` | rollout time step | 코드상 `controller_period <= model_dt`이어야 함. 같게 두는 것을 권장 |
+| `time_steps` | rollout 길이 | `time_steps × model_dt`가 예측 horizon |
+| `batch_size` | 샘플 trajectory 수 | 클수록 품질↑, CPU 비용↑ |
+| `vx_max`, `vx_min` | 전후진 속도 제한 | CARLA 차량 속도와 안전 한계에 맞춤 |
+| `wz_max` | yaw rate 제한 | 실제 조향 한계와 맞춤 |
+| `ax_max`, `ax_min`, `az_max` | 가속/감속 및 yaw 가속 제한 | 너무 크면 명령이 거칠어짐 |
+| `vx_std`, `wz_std` | 샘플링 분산 | 조향 chatter가 있으면 `wz_std`를 줄여봄 |
+| `open_loop` | 현재 odometry 대신 이전 command 기반 예측 | 기본은 `false` 권장. odom latency가 심할 때만 검토 |
+| `critics` | trajectory 평가 항목 | path/goal/obstacle critic을 목적에 맞게 선택 |
+
+### 8.9 출력 명령과 CARLA 제어 변환
+
+MPPI의 최종 출력은 `cmd_vel`이다.
+
+```text
+MPPI output
+  geometry_msgs/TwistStamped or Twist
+  linear.x  = 목표 전후진 속도
+  angular.z = 목표 yaw rate
+```
+
+하지만 CARLA 차량 제어 입력은 일반적으로 `throttle`, `brake`, `steer`이다. 따라서 다음 변환 노드가 별도로 필요하다.
+
+| MPPI 출력 | CARLA 제어로 변환 | 필요 여부 |
+| :--- | :--- | :--- |
+| `cmd_vel.linear.x` | 목표 속도 → throttle/brake PID | 필요 |
+| `cmd_vel.angular.z` | 목표 yaw rate 또는 curvature → steer | 필요 |
+| `cmd_vel.linear.y` | Ackermann/DiffDrive에서는 사용 안 함 | 불필요 |
+
+즉 localization 파이프라인이 `/odometry/local`을 제공하더라도, 실제 CARLA 차량을 움직이려면 `cmd_vel`을 CARLA `VehicleControl`로 바꾸는 low-level controller가 있어야 한다.
+
+### 8.10 현재 시스템 기준 충족/미충족 최종 표
+
+| 항목 | 필요 여부 | 현재 제공 topic/구성 | 상태 | 다음 작업 |
+| :--- | :--- | :--- | :--- | :--- |
+| 현재 속도 odometry | 필수 | `/odometry/local` | 충족 | `controller_server.odom_topic`에 지정 |
+| 연속 TF | 필수 | `odom→base_link` | 충족 | local EKF 유지 |
+| 전역 보정 TF | 필수에 가까움 | `map→odom` | 충족 | global EKF 유지 |
+| 현재 pose | 필수 | TF 합성 `map/odom→base_link` | 충족 가능 | Nav2 frame 설정 필요 |
+| global path | 필수 | 없음. `/path/*`는 시각화용 | 미충족 | planner 또는 FollowPath용 path 생성 |
+| goal pose | 필수 | 없음 | 미충족 | Nav2 action goal 제공 |
+| local costmap | 장애물 회피 시 필수 | LiDAR topic은 있음 | 부분 충족 | Nav2 costmap 설정 필요 |
+| motion model | 필수 | MPPI plugin 제공 | 설정 필요 | `ackermann` 권장 |
+| vehicle constraints | 필수 | 파라미터로 제공 | 설정 필요 | 속도/가속/회전반경 튜닝 |
+| cmd_vel 소비자 | 실제 주행에 필수 | 없음 | 미충족 | `cmd_vel` → CARLA control 노드 필요 |
+| sim time | 필수 | `/clock` | 충족 | Nav2 전체 `use_sim_time:=true` |
+
+최소 실행 관점에서 MPPI controller에 먼저 연결해야 하는 것은 다음 순서다.
+
+```text
+1. controller_server.odom_topic = /odometry/local
+2. Nav2 TF frame: map/odom/base_link 일치
+3. FollowPath에 넣을 계획 경로 생성
+4. local costmap 구성
+5. motion_model = ackermann 및 제약 튜닝
+6. cmd_vel을 CARLA VehicleControl로 변환
 ```

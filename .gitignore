@@ -20,3 +20,7 @@ PythonAPI/**/*.py[cod]
 !/mppi/src/dual_filter/**
 !/mppi/src/gnss_to_utm/
 !/mppi/src/gnss_to_utm/**
+
+/Mandol_ws
+
+!/*.ino

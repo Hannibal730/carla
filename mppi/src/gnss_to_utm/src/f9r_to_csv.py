@@ -16,15 +16,15 @@ def get_ros2_msg_type(bag_reader, topic_name):
 
 def main():
     # --- 경로 직접 지정 ---
-    bag_path = "/home/hannibal/Mandol_ws/rosbag/gnss_bag_9_16/T_parallel_1"
-    
+    bag_path = "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/ros2bag/route_1"
+
     # bag_path에서 파일 이름 추출하여 CSV 경로 생성
     bag_filename = os.path.basename(bag_path)
-    csv_filename = os.path.splitext(bag_filename)[0] + ".csv"
-    csv_path = os.path.join("/home/yoo/workspace/Mandol_ws/data/processed", csv_filename)
+    csv_filename = bag_filename + ".csv"
+    csv_path = os.path.join("/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv", csv_filename)
     # ---------------------
 
-    topic_name = "/f9r/fix"
+    topic_name = "/carla/car/f9r/fix"
 
     print(f"Input bag path: {bag_path}")
     print(f"Output CSV path: {csv_path}")
