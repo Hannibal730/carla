@@ -17,9 +17,9 @@
  * 래치한다. 두 노드가 같은 datum 을 공유하므로 /csv_path 는 별도 TF 없이
  * 바로 utm 프레임 경로로 사용할 수 있다.
  *
- * 변환 규칙 (utm_to_odometry 와 동일):
- *   local_x =  (utm_x - datum_x)
- *   local_y = -(utm_y - datum_y)   // CARLA 좌수계 보정
+ * 변환 규칙 (gnss_to_odom 와 동일, ROS ENU 기준):
+ *   local_x = (utm_x - datum_x)   // east  = +X
+ *   local_y = (utm_y - datum_y)   // north = +Y
  */
 
 class CsvToUtm : public rclcpp::Node
@@ -96,15 +96,25 @@ private:
 
     void publish_path()
     {
-        // UTM 절대 좌표 → utm 프레임 상대 좌표 (CARLA Y 반전 포함)
+        // UTM 절대 좌표 → utm 프레임 상대 좌표 (CARLA +Y=right 보정: north=-Y, east=+X)
+        // gnss_to_odom.py 와 동일한 변환 적용:  local_y = -(utm_y - datum_y)
+        // 연속된 중복 waypoint 제거: 이전 점과 0.1 m 미만 간격이면 건너뜀
+        static constexpr double MIN_STEP = 0.1;  // m
         std::vector<std::pair<double, double>> local_pts;
         local_pts.reserve(utm_points_.size());
         for (const auto& [x, y] : utm_points_) {
-            local_pts.emplace_back(x - datum_x_.value(), -(y - datum_y_.value()));
+            double lx =  (x - datum_x_.value());
+            double ly = -(y - datum_y_.value());   // CARLA +Y=right 보정
+            if (!local_pts.empty()) {
+                double dx = lx - local_pts.back().first;
+                double dy = ly - local_pts.back().second;
+                if (std::sqrt(dx * dx + dy * dy) < MIN_STEP) continue;
+            }
+            local_pts.emplace_back(lx, ly);
         }
 
         nav_msgs::msg::Path path;
-        path.header.stamp = this->get_clock()->now();
+        path.header.stamp = rclcpp::Time(0);  // Time(0) = use latest available TF (sim/wall clock mismatch 방지)
         path.header.frame_id = "utm";
 
         const size_t n = local_pts.size();

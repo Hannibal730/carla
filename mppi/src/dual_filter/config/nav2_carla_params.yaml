@@ -45,7 +45,7 @@ controller_server:
     # ── 실패 허용 시간 ────────────────────────────────────────────────────────
     # 유효한 cmd_vel 을 이 시간(s) 동안 생성하지 못하면 실패 처리.
     # MPPI가 수렴하지 못하거나 costmap에 차량 위치가 없을 때 빠른 실패 감지.
-    failure_tolerance: 0.3
+    failure_tolerance: 1.5
 
     # ── 플러그인 목록 ─────────────────────────────────────────────────────────
     progress_checker_plugins: ["progress_checker"]
@@ -95,6 +95,13 @@ controller_server:
     # =========================================================================
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
+
+      # ── 경로 탐색 반경 ────────────────────────────────────────────────────
+      # MPPI path_handler 가 경로 pose 를 탐색할 최대 반경.
+      # 기본값: getMaxCostmapDist() = max(width,height)/2 = 10 m.
+      # CSV 경로의 첫 waypoint 가 로봇 시작점(datum)에서 ~11.35 m 떨어져 있으므로
+      # 기본값 10 m 으로는 0 poses 에러 발생 → 30 m 으로 확장.
+      max_robot_pose_search_dist: 30.0    # m
 
       # ── 예측 수평선 ───────────────────────────────────────────────────────
       # 예측 구간 = time_steps × model_dt
@@ -174,7 +181,7 @@ controller_server:
       # "ackermann": 차량형(4륜 조향) 플랫폼 필수 설정.
       #   diff_drive 사용 시: 제자리 회전 등 실제 차량이 불가능한 궤적 허용 →
       #   cmd_vel 추종 불가, 차량 손상 위험.
-      motion_model: "ackermann"
+      motion_model: "Ackermann"
       ackermann:
         plugin: "mppi::AckermannMotionModel"
         # 최소 회전반경 (m): MPPI가 생성하는 궤적의 곡률 상한을 결정.

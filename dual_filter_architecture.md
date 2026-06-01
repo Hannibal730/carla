@@ -748,189 +748,6 @@ CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=u
 
 ---
 
-## 7. 실행 방법
-
-### 7.1 사전 준비
-
-```bash
-# robot_localization 패키지 설치 (최초 1회)
-sudo apt install ros-humble-robot-localization
-
-# mppi 워크스페이스 빌드 (최초 1회 또는 소스 수정 후)
-cd ~/carla/mppi
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-```
-
-### 7.2 실행 순서
-
-#### 터미널 1 — CARLA 시뮬레이터 서버
-
-```bash
-cd ~/carla
-source /opt/ros/humble/setup.bash
-
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
-  ./CarlaUE4.sh -RenderOffScreen -quality-level=Low --ros2
-```
-
-#### 터미널 2 — 수동 조종 차량 (맵 로드 및 차량 스폰)
-
-```bash
-cd ~/carla
-source .venv/bin/activate
-
-python PythonAPI/util/config.py --no-rendering
-python PythonAPI/util/config.py --map Town01_Opt
-
-python PythonAPI/examples/manual_control.py \
-  --rolename car \
-  --filter vehicle.micro.microlino \
-  --generation 2 \
-  --sync
-```
-
-#### 터미널 3 — ROS2 센서 브리지 (`/odometry/wheel` 포함)
-
-```bash
-cd ~/carla
-source /opt/ros/humble/setup.bash
-source .venv/bin/activate
-
-python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
-  -f PythonAPI/examples/ros2_sensor/stack.json \
-  --attach-existing \
-  --passive \
-  --python-ros2 \
-  --base-frame base_link \
-  --wait-for-vehicle 30
-```
-
-
-
-
-> **주의:** `--python-ros2` 플래그가 없으면 `static TF(base_link → 각 센서)`가 발행되지 않아 RViz에서 렌더링이 되지 않는다.
-> 또한 이 노드가 CARLA simulation timestamp와 `/clock`을 발행하므로, dual filter와 RViz보다 먼저 실행하는 것이 가장 안전하다.
-
-원하는 센서만 선택할 경우 `--sensors` 플래그에 아래 ID를 공백으로 나열한다.
-
-| 센서 ID | 타입 | 발행 토픽 | 비고 |
-| :--- | :--- | :--- | :--- |
-| `rgb` | `sensor.camera.rgb` | `/carla/car/rgb/image` | RGB 카메라 |
-| `lidar` | `sensor.lidar.ray_cast` | `/carla/car/lidar/point_cloud` | 3D LiDAR (64채널) |
-| `lidar_2d` | `sensor.lidar.ray_cast` | `/carla/car/lidar_2d/point_cloud` | 2D LiDAR (1채널) |
-| `f9r` | `sensor.other.gnss` | `/carla/car/f9r/fix` | GNSS 후륜축 — azimuth 기준점 |
-| `f9p` | `sensor.other.gnss` | `/carla/car/f9p/fix` | GNSS 전방 1.4m — azimuth 벡터 끝점 |
-| `imu` | `sensor.other.imu` | `/carla/car/imu/data` | 6-DOF IMU |
-
-```bash
-# 예시: 듀얼 필터에 필요한 센서만 활성화
-
-cd ~/carla
-source /opt/ros/humble/setup.bash
-source .venv/bin/activate
-
-python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
-  -f PythonAPI/examples/ros2_sensor/stack.json \
-  --attach-existing \
-  --passive \
-  --python-ros2 \
-  --base-frame base_link \
-  --wait-for-vehicle 30 \
-  --sensors f9r f9p imu
-```
-
-#### 터미널 4 — 듀얼 필터 전체 실행
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/carla/mppi/install/setup.bash
-ros2 launch dual_filter dual_filter.launch.py
-```
-
-#### 터미널 5 — RViz (선택)
-
-```bash
-source /opt/ros/humble/setup.bash
-rviz2 -d ~/carla/PythonAPI/examples/ros2_sensor/rviz/ros2_sensor.rviz --ros-args -p use_sim_time:=true
-```
-
-### 7.3 종료
-
-```bash
-pkill -TERM -f 'ros2_sensor.py'
-pkill -TERM -f 'manual_control.py'
-pkill -TERM -f 'rviz2'
-pkill -TERM -f 'CarlaUE4-Linux-Shipping'
-```
-
-### 7.4 동작 확인
-
-```bash
-# sim time 확인
-ros2 topic echo --once /clock
-ros2 param get /local_ekf use_sim_time
-ros2 param get /global_ekf use_sim_time
-
-# 주요 입력 stamp가 /clock과 같은 CARLA simulation time인지 확인
-ros2 topic echo --once /odometry/wheel --field header.stamp
-ros2 topic echo --once /carla/car/imu/data --field header.stamp
-ros2 topic echo --once /odometry/local --field header.stamp
-ros2 topic echo --once /odometry/global --field header.stamp
-
-# TF 트리 확인 (utm → odom → base_link 구조인지 확인)
-ros2 run tf2_tools view_frames
-
-# wheel/IMU 입력 성분 확인
-ros2 topic echo --once /odometry/wheel --field twist.twist.linear
-ros2 topic echo --once /carla/car/imu/data --field angular_velocity
-
-# 로컬 EKF 출력 확인 (MPPI 제어 입력용 — GNSS jump 없이 부드러움)
-ros2 topic echo /odometry/local
-
-# 글로벌 EKF 출력 확인 (utm → odom 보정용)
-ros2 topic echo /odometry/global
-
-# GNSS 브리지 출력 확인 (/path/gnss의 원천: UTM 좌표 + azimuth yaw)
-ros2 topic echo /odometry/gnss
-```
-
-### 7.5 전체 데이터 흐름
-
-```text
-CARLA Simulator
-  ├─ sim time ──────────────→ ros2_sensor.py ──→ /clock ──→ use_sim_time nodes
-  │
-  ├─ /carla/car/f9r/fix ──→ f9r_to_utm ──────────→ /f9r_utm ──────────┐
-  │                     └──→ azimuth_calc ─────────→ /azimuth_angle ──┤
-  │                                                                    ▼
-  ├─ /carla/car/f9p/fix ──→ f9p_to_utm ──→ /f9p_utm          gnss_to_odom
-  │                                                           │         │
-  │                                               /odometry/gnss   /utm_datum
-  │                                                           │         │
-  ├─ /carla/car/imu/data ─────────────────────────────────────┼─────────┼──┐
-  │                                                           │         │  │
-  └─ ros2_sensor.py ──→ /odometry/wheel ─────────────────────┼─────────┼──┤
-                                │                             │         │  │
-                                └─────────────┬──────────────┘         │  │
-                                              │                    csv_to_utm
-                                              │                    /csv_path
-                                              ▼
-                         local_ekf  ◄─ /odometry/wheel(vx,vy=0) + /imu/data(wz)
-                         global_ekf ◄─ /odometry/wheel(vx,vy=0) + /imu/data(wz) + /odometry/gnss
-                              │                       │
-                              ▼                       ▼
-                    /odometry/local           /odometry/global
-                    odom → base_link TF       utm → odom TF
-                    (MPPI 제어용)              (전역 보정용)
-
-                    /odometry/local  ─→ path_visualizer ─→ /path/odom
-                    /odometry/gnss   ─→ path_visualizer ─→ /path/gnss
-                    /odometry/global ─→ path_visualizer ─→ /path/global_ekf
-```
-
----
-
 ## 8. Nav2 MPPI Controller에 필요한 전체 입력과 현재 충족 여부
 
 분석 대상:
@@ -2140,6 +1957,22 @@ source install/setup.bash
 
 dual_filter 스택이 빌드된 상태이고 Nav2가 설치된 상태를 전제로 한다. 각 구성 파일의 상세 내용은 섹션 10.1.1–10.1.3을 참고한다.
 
+#### 사전 준비 (빌드)
+
+```bash
+# robot_localization 설치 (최초 1회)
+sudo apt install ros-humble-robot-localization
+
+# dual_filter / gnss_to_utm 패키지 빌드 (최초 1회 또는 소스 수정 후)
+cd ~/carla/mppi
+source /opt/ros/humble/setup.bash
+colcon build --packages-select dual_filter gnss_to_utm --symlink-install
+source install/setup.bash
+```
+
+> **`No executable found` 오류 시**: `setup.py`에 entry point를 추가한 뒤 빌드하지 않으면
+> 발생한다. 위 명령으로 재빌드하면 `cmd_vel_to_carla`, `follow_path_client` 가 등록된다.
+
 #### 10.4.1 전체 실행 순서
 
 아래 순서를 정확히 따라야 한다. 특히 `ros2_sensor.py`가 `/clock`을 먼저 발행해야 EKF 시간 동기화가 올바르게 동작한다.
@@ -2149,10 +1982,11 @@ dual_filter 스택이 빌드된 상태이고 Nav2가 설치된 상태를 전제�
 터미널 2: manual_control (맵 로드 + 차량 스폰)
 터미널 3: ros2_sensor.py (/clock + 센서 토픽)
 터미널 4: dual_filter launch (EKF + GNSS 파이프라인)
-터미널 5: csv_to_utm launch (경로 파일 → /csv_path)
-터미널 6: controller_server (Nav2 MPPI)
-터미널 7: cmd_vel_to_carla (MPPI → CARLA 제어)
-터미널 8: follow_path_client (경로 추종 시작)
+터미널 5 (선택): RViz2 시각화
+터미널 6: csv_to_utm launch (경로 파일 → /csv_path)
+터미널 7: controller_server + lifecycle_manager (Nav2 MPPI 자동 활성화)
+터미널 8: cmd_vel_to_carla (MPPI → CARLA 제어)
+터미널 9: follow_path_client (경로 추종 시작)
 ```
 
 ##### 터미널 1 — CARLA 시뮬레이터
@@ -2194,27 +2028,41 @@ source ~/carla/mppi/install/setup.bash
 ros2 launch dual_filter dual_filter.launch.py
 ```
 
-##### 터미널 5 — 경로 파일 → `/csv_path`
+##### 터미널 5 (선택) — RViz2
+
+```bash
+source /opt/ros/humble/setup.bash
+rviz2 -d ~/carla/PythonAPI/examples/ros2_sensor/rviz/ros2_sensor.rviz \
+  --ros-args -p use_sim_time:=true
+```
+
+##### 터미널 6 — 경로 파일 → `/csv_path`
+<!-- csv_to_utm.yaml에서 csv_file_path를 실제 경로로 설정 후: -->
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/carla/mppi/install/setup.bash
-# csv_to_utm.yaml에서 csv_file_path를 실제 경로로 설정 후:
 ros2 launch gnss_to_utm csv_to_utm.launch.py
 ```
 
-##### 터미널 6 — Nav2 controller_server (MPPI)
+##### 터미널 7 — Nav2 controller_server (MPPI)
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/carla/mppi/install/setup.bash
-ros2 run nav2_controller controller_server \
-  --ros-args \
-  --params-file ~/carla/mppi/src/dual_filter/config/nav2_carla_params.yaml \
-  -p use_sim_time:=true
+ros2 launch dual_filter controller.launch.py
 ```
 
-##### 터미널 7 — `cmd_vel` → CARLA 제어
+> **`ros2 run` 대신 `ros2 launch`를 사용하는 이유**: `controller_server`는 Nav2 lifecycle node다.
+> `ros2 run`으로 직접 실행하면 UNCONFIGURED 상태로 머물러 `/follow_path` action server가
+> 활성화되지 않는다 (Action servers: 0). `controller.launch.py`는 `lifecycle_manager`를
+> 함께 기동해 자동으로 configure → activate 전환을 수행한다.
+>
+> **중복 실행 주의**: 같은 명령을 두 터미널에서 실행하면 `/controller_server` 노드가 2개
+> 생겨 action server가 동작하지 않는다. 실행 전 `ros2 node list | grep controller`로
+> 기존 인스턴스가 없는지 확인한다.
+
+##### 터미널 8 — `cmd_vel` → CARLA 제어
 
 ```bash
 cd ~/carla
@@ -2226,7 +2074,7 @@ ros2 run dual_filter cmd_vel_to_carla \
   -- --rolename car --wheelbase 1.47
 ```
 
-##### 터미널 8 — 경로 추종 시작
+##### 터미널 9 — 경로 추종 시작
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -2236,7 +2084,46 @@ ros2 run dual_filter follow_path_client
 
 #### 10.4.2 동작 확인
 
+EKF 스택 확인:
+
 ```bash
+# sim time 확인
+ros2 topic echo --once /clock
+ros2 param get /local_ekf use_sim_time
+ros2 param get /global_ekf use_sim_time
+
+# 주요 입력 stamp가 /clock과 동일한지 확인
+ros2 topic echo --once /odometry/wheel --field header.stamp
+ros2 topic echo --once /carla/car/imu/data --field header.stamp
+ros2 topic echo --once /odometry/local --field header.stamp
+ros2 topic echo --once /odometry/global --field header.stamp
+
+# TF 트리 확인 (utm → odom → base_link 구조인지)
+ros2 run tf2_tools view_frames
+
+# wheel / IMU 입력 확인
+ros2 topic echo --once /odometry/wheel --field twist.twist.linear
+ros2 topic echo --once /carla/car/imu/data --field angular_velocity
+
+# 로컬 EKF 출력 (MPPI 제어 입력용 — GNSS jump 없이 부드러워야 함)
+ros2 topic echo /odometry/local
+# 글로벌 EKF 출력 (utm → odom 보정용)
+ros2 topic echo /odometry/global
+# GNSS 브리지 출력
+ros2 topic echo /odometry/gnss
+```
+
+MPPI / 경로 추종 확인:
+
+```bash
+# controller_server lifecycle 상태 확인 — active [3] 이어야 정상
+ros2 lifecycle get /controller_server
+
+# /follow_path action server 활성화 확인 — Action servers: 1 이어야 정상
+ros2 action info /follow_path
+# Action servers: 0 이면 controller_server 가 UNCONFIGURED 상태임
+# → 터미널 7을 ros2 launch dual_filter controller.launch.py 로 재실행
+
 # MPPI가 cmd_vel을 발행하는지 확인
 ros2 topic echo /cmd_vel
 
@@ -2279,7 +2166,173 @@ critics:
   # CostCritic 제거 (costmap 없이 동작 가능)
 ```
 
-이 구성으로 터미널 6-8만 실행하면 costmap 없이 경로 추종을 테스트할 수 있다.
+이 구성으로 터미널 7-9만 실행하면 costmap 없이 경로 추종을 테스트할 수 있다.
+
+---
+
+#### 10.4.4 전체 데이터 흐름
+
+```text
+CARLA Simulator
+  ├─ sim time ──────────────→ ros2_sensor.py ──→ /clock ──→ use_sim_time nodes
+  │
+  ├─ /carla/car/f9r/fix ──→ f9r_to_utm ──────────→ /f9r_utm ──────────┐
+  │                     └──→ azimuth_calc ─────────→ /azimuth_angle ──┤
+  │                                                                    ▼
+  ├─ /carla/car/f9p/fix ──→ f9p_to_utm ──→ /f9p_utm          gnss_to_odom
+  │                                                           │         │
+  │                                               /odometry/gnss   /utm_datum
+  │                                                           │         │
+  ├─ /carla/car/imu/data ─────────────────────────────────────┼─────────┼──┐
+  │                                                           │         │  │
+  └─ ros2_sensor.py ──→ /odometry/wheel ─────────────────────┼─────────┼──┤
+                                │                             │         │  │
+                                └─────────────┬──────────────┘         │  │
+                                              │                    csv_to_utm
+                                              │                    /csv_path
+                                              ▼                        │
+                         local_ekf  ◄─ wheel(vx) + imu(wz)           │
+                         global_ekf ◄─ wheel(vx) + imu(wz) + gnss    │
+                              │                       │               │
+                              ▼                       ▼               ▼
+                    /odometry/local           utm → odom TF     /csv_path
+                    odom → base_link TF       (전역 보정)       (레퍼런스 경로)
+                          │                                          │
+                          └─────────────────┬────────────────────────┘
+                                            ▼
+                                   controller_server (MPPI)
+                                            │
+                                            ▼
+                                        /cmd_vel
+                                            │
+                                            ▼
+                                   cmd_vel_to_carla → CARLA VehicleControl
+```
+
+---
+
+#### 10.4.5 종료
+
+```bash
+pkill -TERM -f 'follow_path_client'
+pkill -TERM -f 'controller_server'
+pkill -TERM -f 'cmd_vel_to_carla'
+pkill -TERM -f 'ros2_sensor.py'
+pkill -TERM -f 'manual_control.py'
+pkill -TERM -f 'rviz2'
+pkill -TERM -f 'CarlaUE4-Linux-Shipping'
+pkill -9 -f 'CarlaUE4-Linux-Shipping'
+```
+
+---
+
+#### 10.4.6 알려진 오류 및 해결
+
+아래는 실제 실행 중 발생한 오류와 적용한 수정 사항이다.
+
+---
+
+**① `FollowPath action 서버에 연결하지 못했습니다` — 10 초 타임아웃**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 원인 | `follow_path_client` 가 10 초 내 서버 응답 없으면 영구 종료. `controller_server` lifecycle 활성화에 10 초 이상 소요될 수 있음 |
+| 수정 파일 | `dual_filter/follow_path_client.py` |
+| 수정 내용 | 10 초 1회 타임아웃 → 5 초 간격 무한 재시도 루프로 변경 |
+| 확인 | `ros2 lifecycle get /controller_server` → `active [3]` 출력 후 자동 연결 |
+
+---
+
+**② `Model ackermann is not valid! Valid options are ... Ackermann`**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 원인 | `nav2_carla_params.yaml` 에서 `motion_model: "ackermann"` (소문자) — Nav2 는 대소문자 구분 |
+| 수정 파일 | `nav2_carla_params.yaml` |
+| 수정 내용 | `motion_model: "ackermann"` → `motion_model: "Ackermann"` |
+| 확인 | controller_server 로그에 `Model Ackermann is valid` 출력 |
+
+---
+
+**③ `/follow_path` action server 없음 — `controller_server` UNCONFIGURED**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 원인 | `ros2 run nav2_controller controller_server` 만 실행하면 lifecycle_manager 없어서 UNCONFIGURED 상태 유지. `/follow_path` 서버 미생성 |
+| 수정 파일 | `dual_filter/launch/controller.launch.py` (신규 생성) |
+| 수정 내용 | `controller_server` + `lifecycle_manager(autostart: True)` 를 함께 실행하는 launch 파일 생성 |
+| 실행 명령 | `ros2 launch dual_filter controller.launch.py` |
+| 확인 | `ros2 action info /follow_path` → `Action servers: 1` |
+
+---
+
+**④ `Resulting plan has 0 poses in it` — CSV 경로 시작점과 로봇 위치 불일치**
+
+**원인 분석:**
+
+CSV 경로 파일(`route_1.csv`)은 GPS 녹화를 차량 스폰 위치가 아니라 **11.35 m 앞에서 시작**했다. path_handler 는 경로 파일의 첫 번째 pose 부터 스캔하므로, 첫 pose 가 `max_robot_pose_search_dist` 보다 멀면 즉시 0 poses 를 반환한다.
+
+```text
+CSV row 1    : datum 기준 +11.35 m (경로 파일 시작)   ← path_handler 시작 위치
+  ...
+  (약 250 m 루프)
+  ...
+CSV row 1835 : datum 기준  +0.31 m                   ← 로봇 실제 현재 위치
+CSV row 1924 : datum 기준 +22.65 m (경로 파일 끝)
+```
+
+* `max_robot_pose_search_dist` 기본값 = `getMaxCostmapDist()` = 10 m
+* row 1 이 11.35 m > 10 m → 즉시 반환 → **0 poses**
+
+**수정 내용 (2가지 병행 적용):**
+
+| 수정 파일 | 수정 내용 |
+| :--- | :--- |
+| `nav2_carla_params.yaml` | `FollowPath:` 섹션에 `max_robot_pose_search_dist: 30.0` 추가 → row 1 (11.35 m < 30 m) 포함 |
+| `follow_path_client.py` | 경로 전송 전 `/odometry/local` 로 로봇 위치 확인 후, 가장 가까운 pose 부터 잘라서 전송 → **row 1835 (0.31 m) 부터 추종 시작** |
+
+| 진단 | 명령 |
+| :--- | :--- |
+| 로봇 위치 확인 | `ros2 topic echo --once /odometry/local --field pose.pose.position` |
+| 경로 첫 pose 확인 | `ros2 topic echo /csv_path \| grep -A3 "position:" \| head -6` |
+| 수정 후 확인 | `follow_path_client` 로그: `가장 가까운 waypoint: index=1834, 거리=0.31 m` → `FollowPath goal 수락됨.` |
+
+---
+
+**⑤ CARLA `bind: Address already in use` (포트 2000)**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 원인 | 이전 CARLA 프로세스가 포트 2000 점유 중. `pkill -TERM` 으로는 CARLA 가 종료되지 않음 (SIGTERM 무시) |
+| 수정 내용 | `pkill -9 -f 'CarlaUE4-Linux-Shipping'` 사용 (SIGKILL) |
+| 확인 | `ss -tlnp \| grep 2000` → 빈 결과 확인 후 CARLA 재시작 |
+
+---
+
+**⑥ `Transform data too old when converting from utm to odom` → 즉시 `Reached the goal!`**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 증상 | `FollowPath goal 수락됨` → 수십 ms 만에 `Reached the goal!`. 차량이 전혀 이동하지 않음. |
+| 에러 | `[tf_help]: Transform data too old … Data time: 1780166575s, Transform time: 463s` |
+| 원인 | `csv_to_utm` 노드가 `use_sim_time` 미설정 → `path.header.stamp = this->get_clock()->now()` 가 **벽시계(wall clock) 시간**(~1780166575 s)을 반환. 반면 `controller_server` / 글로벌 EKF는 `use_sim_time: true` → TF는 **CARLA 시뮬레이션 시간**(~463 s)으로 발행. 두 클록이 완전히 달라 `utm→odom` TF 조회 실패. TF 조회 실패 시 MPPI 는 유효한 path pose 를 0개로 보고, SimpleGoalChecker 가 즉시 도달 판정. |
+| 수정 파일 | `mppi/src/gnss_to_utm/src/csv_to_utm.cpp` |
+| 수정 내용 | `path.header.stamp = this->get_clock()->now()` → `path.header.stamp = rclcpp::Time(0)` |
+
+`rclcpp::Time(0)` 의 의미: TF 시스템에 "현재 시각의 최신 변환을 사용하라"는 요청. 시뮬레이션/벽시계 클록 불일치와 TF 버퍼 만료 문제를 동시에 해결. 사전 녹화 경로(static path)에 표준적으로 사용하는 패턴.
+
+```cpp
+// 수정 전
+path.header.stamp = this->get_clock()->now();  // 벽시계 → TF 클록(sim time)과 불일치
+
+// 수정 후
+path.header.stamp = rclcpp::Time(0);           // 최신 TF 사용 (클록 무관)
+```
+
+| 확인 방법 | 내용 |
+| :--- | :--- |
+| 빌드 | `cd ~/carla/mppi && colcon build --packages-select gnss_to_utm --symlink-install` |
+| 정상 로그 | controller_server 에서 `Reached the goal!` 없이 MPPI 제어 루프 지속 실행 |
 
 ---
 

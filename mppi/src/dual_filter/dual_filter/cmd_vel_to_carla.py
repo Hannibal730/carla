@@ -51,9 +51,10 @@ class CmdVelToCarla(Node):
         target_vx = msg.linear.x
         target_wz = msg.angular.z
 
-        # 현재 속도 크기 (CARLA 월드 좌표 → 스칼라)
+        # 현재 전방 속도 (CARLA 월드 속도 → 차량 전방 방향 투영, 후진 시 음수)
         v = self._vehicle.get_velocity()
-        current_vx = math.hypot(v.x, v.y)
+        yaw_rad = math.radians(self._vehicle.get_transform().rotation.yaw)
+        current_vx = v.x * math.cos(yaw_rad) + v.y * math.sin(yaw_rad)
 
         # ── throttle / brake: 비례 제어 ──────────────────────────────
         err = target_vx - current_vx
@@ -65,9 +66,13 @@ class CmdVelToCarla(Node):
             brake = min(-_KP_SPEED * err, 1.0)
 
         # ── 자전거 모델 역변환 ────────────────────────────────────────
+        # Nav2/MPPI 표준 ROS 약속: wz > 0 = CCW = 좌회전
+        # CARLA 약속:              steer > 0 = 우회전
+        # 표준 자전거 모델 δ = atan2(wz*L, vx) 에서 δ > 0 = 좌회전 (표준 ROS),
+        # 그러나 CARLA steer > 0 = 우회전이므로 부호를 반전해야 일치한다.
         # vx ≈ 0 이면 δ = 0 (정지 중 급선회 방지)
         if abs(target_vx) > 0.05:
-            steer_rad = math.atan2(target_wz * self._wheelbase, target_vx)
+            steer_rad = math.atan2(-target_wz * self._wheelbase, target_vx)
         else:
             steer_rad = 0.0
 
@@ -79,6 +84,9 @@ class CmdVelToCarla(Node):
         ctrl.brake = float(brake)
         ctrl.steer = float(steer)
         self._vehicle.apply_control(ctrl)
+        self.get_logger().info(
+            f'wz={target_wz:+.3f} steer={steer:+.3f} vx={target_vx:.2f}',
+            throttle_duration_sec=0.5)
 
 
 def _wait_for_vehicle(world: carla.World, role_name: str, timeout: float) -> carla.Vehicle:

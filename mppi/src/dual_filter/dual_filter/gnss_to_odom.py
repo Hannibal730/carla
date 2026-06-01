@@ -1,18 +1,17 @@
 """
 /f9r_utm (PointStamped)  +  /azimuth_angle (Float64, degrees, geo N=0 CW+)
-→  /odometry/gnss (Odometry, CARLA-aligned ROS utm frame)
+→  /odometry/gnss (Odometry, CARLA-aligned utm frame)
 
-Conversion:  yaw_enu = π/2 − bearing_deg × π/180
-CARLA uses +Y to the vehicle's right, while ROS uses +Y left. Mirror the
-UTM northing axis and yaw so the GNSS path matches the local ROS odometry
-and the CARLA simulator's apparent turn direction.
+Conversion:
+  yaw_enu = π/2 − bearing_deg × π/180
+  yaw_ros = −yaw_enu           ← CARLA +Y=right → ROS +Y=left 보정
+  x_ros   =  (easting  − datum_easting)
+  y_ros   = −(northing − datum_northing)  ← 동일 보정
 
-The first received UTM fix is stored as the datum origin so that the
-utm frame starts at (0, 0) — matching the odom frame convention used by
-the local EKF.  Without this subtraction, raw UTM coordinates (~300 000 m
-easting / ~4 000 000 m northing) would place the utm origin hundreds of
-kilometres from the local odom origin, making the global path appear
-completely offset in RViz.
+f9r GNSS 센서는 stack.json 에서 spawn_point x=0,y=0 으로 설정돼 있어
+후륜축(= base_link 원점)에 정확히 위치한다. 별도 오프셋 보정 불필요.
+
+datum: 최초 f9r 수신 시의 UTM 좌표를 래치. 이 점이 utm 프레임 (0,0)이 된다.
 """
 import math
 
@@ -30,8 +29,8 @@ class GnssToOdom(Node):
         super().__init__('gnss_to_odom')
 
         self._azimuth_deg: float | None = None  # geographic bearing, degrees, N=0 CW+
-        self._datum_x: float | None = None      # first UTM easting  (utm origin)
-        self._datum_y: float | None = None      # first UTM northing (utm origin)
+        self._datum_x: float | None = None      # first UTM easting  (utm 원점)
+        self._datum_y: float | None = None      # first UTM northing (utm 원점)
 
         self.create_subscription(PointStamped, '/f9r_utm', self._utm_cb, 10)
         self.create_subscription(Float64, '/azimuth_angle', self._azimuth_cb, 10)
@@ -62,7 +61,8 @@ class GnssToOdom(Node):
             self._datum_x = msg.point.x
             self._datum_y = msg.point.y
             self.get_logger().info(
-                f'UTM datum set: easting={self._datum_x:.2f}, northing={self._datum_y:.2f}')
+                f'UTM datum set: easting={self._datum_x:.2f}, '
+                f'northing={self._datum_y:.2f}')
             # /utm_datum 발행 (transient_local) → csv_to_utm 이 언제 시작해도 수신 보장
             datum_msg = PointStamped()
             datum_msg.header.stamp = msg.header.stamp
@@ -71,8 +71,9 @@ class GnssToOdom(Node):
             datum_msg.point.y = self._datum_y
             self._datum_pub.publish(datum_msg)
 
-        # Geographic bearing (N=0, CW+, deg) → ENU yaw, then mirror Y for
-        # CARLA's left-handed coordinate convention into ROS base_link (Y-left).
+        # Geographic bearing (N=0, CW+, deg) → ENU yaw → ROS yaw (부호 반전)
+        # yaw_enu = π/2 - azimuth_rad
+        # yaw_ros = -yaw_enu  (CARLA +Y=right → ROS +Y=left 미러링)
         yaw = -math.radians(90.0 - self._azimuth_deg)
         yaw = math.atan2(math.sin(yaw), math.cos(yaw))  # normalise to [-π, π]
 
@@ -84,8 +85,8 @@ class GnssToOdom(Node):
         odom.header.frame_id = 'utm'
         odom.child_frame_id = 'base_link'
 
-        odom.pose.pose.position.x = msg.point.x - self._datum_x
-        odom.pose.pose.position.y = -(msg.point.y - self._datum_y)
+        odom.pose.pose.position.x =  (msg.point.x - self._datum_x)
+        odom.pose.pose.position.y = -(msg.point.y - self._datum_y)   # CARLA +Y=right 보정
         odom.pose.pose.position.z = 0.0
         odom.pose.pose.orientation.x = 0.0
         odom.pose.pose.orientation.y = 0.0

@@ -411,14 +411,14 @@ class PythonRos2Publisher:
         msg = self.Imu()
         msg.header.stamp = self._stamp_from_carla_time(imu.timestamp)
         msg.header.frame_id = frame_id
-        # CARLA uses X=fwd, Y=right, Z=up. ROS base_link uses X=fwd, Y=left,
-        # Z=up, so yaw-rate sign must flip together with the lateral axis.
+        # CARLA 좌수계(+Y=남=오른쪽) → ROS ENU 우수계(+Y=북=왼쪽) 변환:
+        #   linear.y, angular.y, angular.z 부호 반전
         msg.linear_acceleration.x =  imu.accelerometer.x
         msg.linear_acceleration.y = -imu.accelerometer.y
         msg.linear_acceleration.z =  imu.accelerometer.z
         msg.angular_velocity.x =  imu.gyroscope.x
         msg.angular_velocity.y = -imu.gyroscope.y
-        msg.angular_velocity.z = -imu.gyroscope.z
+        msg.angular_velocity.z = -imu.gyroscope.z   # ROS convention: CCW(좌회전) = positive
         msg.orientation_covariance[0] = -1.0  # heading은 dual GNSS(f9p - f9r) 차분으로 제공
 
         angular_velocity_cov = [0.0] * 9
