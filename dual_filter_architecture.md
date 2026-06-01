@@ -6,7 +6,8 @@
 | :--- | :--- | :--- |
 | CARLA simulation clock | `/clock` | `rosgraph_msgs/msg/Clock` |
 | RGB 카메라 | `/carla/car/rgb/image` | `sensor_msgs/msg/Image` |
-| LiDAR | `/carla/car/lidar/point_cloud` | `sensor_msgs/msg/PointCloud2` |
+| LiDAR (3D) | `/carla/car/lidar/point_cloud` | `sensor_msgs/msg/PointCloud2` |
+| LiDAR (2D) | `/carla/car/lidar_2d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
 | GNSS (후륜축) | `/carla/car/f9r/fix` | `sensor_msgs/msg/NavSatFix` |
 | GNSS (전방 1.4m) | `/carla/car/f9p/fix` | `sensor_msgs/msg/NavSatFix` |
 | IMU | `/carla/car/imu/data` | `sensor_msgs/msg/Imu` |
@@ -631,12 +632,16 @@ mppi/
 │       ├── package.xml
 │       ├── setup.py / setup.cfg
 │       ├── dual_filter/
-│       │   ├── gnss_to_odom.py   ← Node 1d: /f9r_utm + /azimuth_angle → /odometry/gnss + /utm_datum
-│       │   └── path_visualizer.py ← Odometry → Path 누적 발행 (3개 인스턴스)
+│       │   ├── gnss_to_odom.py        ← Node 1d: /f9r_utm + /azimuth_angle → /odometry/gnss + /utm_datum
+│       │   ├── path_visualizer.py     ← Odometry → Path 누적 발행 (3개 인스턴스)
+│       │   ├── cmd_vel_to_carla.py    ← /cmd_vel (Twist) → CARLA VehicleControl
+│       │   └── follow_path_client.py  ← /csv_path 수신 → FollowPath action goal 전송
 │       ├── config/
-│       │   └── ekf_params.yaml      ← Section 5 파라미터 (local_ekf + global_ekf)
+│       │   ├── ekf_params.yaml        ← Section 5 파라미터 (local_ekf + global_ekf)
+│       │   └── nav2_carla_params.yaml ← controller_server + MPPI + local_costmap 설정
 │       └── launch/
-│           └── dual_filter.launch.py ← 전체 시스템 런치 파일
+│           ├── dual_filter.launch.py  ← EKF + GNSS 파이프라인 런치
+│           └── controller.launch.py   ← controller_server + lifecycle_manager 런치
 ├── build/
 ├── install/
 └── log/
@@ -969,6 +974,8 @@ MPPI output
 
 ### 8.10 현재 시스템 기준 충족/미충족 최종 표
 
+> **참고:** 이 표는 구현 이전의 요구사항 분석 결과다. 구현 완료 후 실제 상태는 [Section 10.1](#101-현재-상태-요약)을 참고한다.
+
 | 항목 | 필요 여부 | 현재 제공 topic/구성 | 상태 | 다음 작업 |
 | :--- | :--- | :--- | :--- | :--- |
 | 현재 속도 odometry | 필수 | `/odometry/local` | 충족 | `controller_server.odom_topic`에 지정 |
@@ -1236,7 +1243,7 @@ ros2 run serial_bridge serial_bridge
 | `controller_frequency` | 20.0 Hz | local_ekf(50 Hz)보다 낮게. `model_dt = 1/20 = 0.05 s`와 일치시킬 것 |
 | `odom_topic` | `/odometry/local` | local EKF 출력(GNSS 미포함) 사용. GNSS 오차 도약에 면역 |
 | `costmap_update_timeout` | 0.30 s | sim time TF 지연 흡수 |
-| `failure_tolerance` | 0.3 s | 유효 cmd_vel 미생성 허용 시간 |
+| `failure_tolerance` | 1.5 s | 유효 cmd_vel 미생성 허용 시간 |
 | `progress_checker` | `SimpleProgressChecker` | 10 s 동안 0.5 m 이상 이동 없으면 stuck 판정 |
 | `goal_checker` | `SimpleGoalChecker` | 목표 0.5 m / 0.3 rad 이내 도달 시 성공 |
 | `PathHandler` | `FeasiblePathHandler` | 이미 지나친 waypoint prune_distance 5.0 m 이상이면 제거 |
@@ -1632,11 +1639,13 @@ MPPI 경로 추종 시작 → /cmd_vel 발행
 
 ##### action 결과 코드
 
+ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
+
 | status | 의미 |
 | :---: | :--- |
-| 3 | 성공 (목표 도달) |
-| 4 | 취소됨 |
-| 6 | 중단 (progress_checker 실패 또는 controller 오류) |
+| 4 | 성공 (SUCCEEDED — 목표 도달) |
+| 5 | 취소됨 (CANCELED) |
+| 6 | 중단 (ABORTED — progress_checker 실패 또는 controller 오류) |
 
 ---
 
@@ -2333,6 +2342,20 @@ path.header.stamp = rclcpp::Time(0);           // 최신 TF 사용 (클록 무�
 | :--- | :--- |
 | 빌드 | `cd ~/carla/mppi && colcon build --packages-select gnss_to_utm --symlink-install` |
 | 정상 로그 | controller_server 에서 `Reached the goal!` 없이 MPPI 제어 루프 지속 실행 |
+
+---
+
+**⑦ `Control loop missed its desired rate` 연속 발생 → TF extrapolation → ABORT**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 증상 | `[WARN] Control loop missed its desired rate of 20.0000Hz` 가 수십 초 연속 출력된 후, `[ERROR] Lookup would require extrapolation into the future` → `[WARN] Aborting handle.` |
+| 에러 | `Requested time T+0.05 but the latest data is at time T, when looking up transform from frame [odom] to frame [utm]` |
+| 원인 | MPPI 궤적 계산(CPU 단일 스레드)이 한 제어 주기(50 ms)를 초과. 제어 루프가 실제 시간보다 뒤처지면서 TF 조회 시 요청 시각이 TF 버퍼의 최신 데이터보다 50 ms 미래가 됨 → 하드 예외 발생 → 즉시 ABORT. `failure_tolerance` 타이머와 무관한 hard-error 경로로 종료됨 |
+| 원인 수치 | `batch_size=2000, time_steps=56, controller_frequency=20 Hz` 기준 약 60 ms 소요 → 20 Hz 예산(50 ms) 초과 |
+| 해결 A (즉시 적용) | `nav2_carla_params.yaml` 에서 계산량 감소: `batch_size: 2000 → 1000`, `time_steps: 56 → 40`, `visualize: false`, `controller_frequency: 10.0`, `model_dt: 0.10` |
+| 해결 B (근본 해결) | nav2_mppi_controller 소스 빌드 + OpenMP 활성화: `colcon build --packages-select nav2_mppi_controller --cmake-args -DWITH_OPENMP=ON`. i7-13700HX 24 스레드 기준 약 10x 속도 향상 기대 |
+| 확인 | `ros2 topic hz /cmd_vel` → 설정한 `controller_frequency` 에 근접하는지 확인 |
 
 ---
 
