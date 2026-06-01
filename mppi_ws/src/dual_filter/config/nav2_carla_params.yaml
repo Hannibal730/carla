@@ -108,7 +108,7 @@ controller_server:
       #          = 56 × 0.05 s = 2.8 s
       # vx_max = 5 m/s 기준 2.8 s 동안 이동 거리 = 14 m → 충분한 예측 거리.
       # time_steps 증가 시: 더 긴 예측 → 급커브 사전 감지 가능, but 계산 증가.
-      time_steps: 56
+      time_steps: 40
       # model_dt = 1 / controller_frequency (반드시 일치시킬 것)
       model_dt:   0.05                 # s
 
@@ -116,7 +116,7 @@ controller_server:
       # CPU 환경에서 1000~2000 적절. GPU 가속 시 4096 이상 권장.
       # 숫자가 클수록: 더 다양한 궤적 탐색 → 최적 궤적 품질 향상
       # 숫자가 작을수록: 계산 시간 단축 → 실시간 여유 확보
-      batch_size: 2000
+      batch_size: 1000
 
       # ── 닫힌루프 모드 ─────────────────────────────────────────────────────
       # false(닫힌루프): 각 time_step 마다 실제 차량 odometry를 반영해 롤아웃.
