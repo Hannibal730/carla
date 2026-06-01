@@ -14,12 +14,12 @@ PythonAPI/**/__pycache__/
 PythonAPI/**/*.py[cod]
 
 
-!/mppi/
-!/mppi/src/
-!/mppi/src/dual_filter/
-!/mppi/src/dual_filter/**
-!/mppi/src/gnss_to_utm/
-!/mppi/src/gnss_to_utm/**
+!/mppi_ws/
+!/mppi_ws/src/
+!/mppi_ws/src/dual_filter/
+!/mppi_ws/src/dual_filter/**
+!/mppi_ws/src/gnss_to_utm/
+!/mppi_ws/src/gnss_to_utm/**
 
 /Mandol_ws
 

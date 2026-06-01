@@ -1,0 +1,393 @@
+# =============================================================================
+# nav2_carla_params.yaml — Nav2 controller_server + MPPI + local_costmap
+#
+# 대상 차량 : vehicle.micro.microlino  (wheelbase ≈ 1.47 m, width ≈ 1.475 m)
+# Nav2 버전 : 1.1.20 (Humble)
+# TF tree  : utm → odom → base_link  (REP-105, dual_filter 스택 출력)
+#
+# 실행 방법:
+#   ros2 run nav2_controller controller_server \
+#     --ros-args --params-file ~/carla/mppi/src/dual_filter/config/nav2_carla_params.yaml \
+#     -p use_sim_time:=true
+# =============================================================================
+
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+
+    # ── 제어 루프 주파수 ──────────────────────────────────────────────────────
+    # local_ekf 주파수(50 Hz)보다 반드시 낮게 설정해야 매 제어 주기마다
+    # 최신 odometry를 수신할 수 있다.
+    # 20 Hz = model_dt 와 역수 관계: controller_frequency × model_dt = 1
+    # 20 Hz를 넘기면 계산 부하가 급격히 증가 (batch_size × time_steps × freq).
+    controller_frequency: 20.0           # Hz
+
+    # ── odometry 소스 ─────────────────────────────────────────────────────────
+    # /odometry/local : local EKF 출력 (wheel + IMU만 융합, GNSS 불포함)
+    #   → GNSS 수신 불량 구간이나 멀티패스 오차에서도 MPPI 제어 루프가 안정적.
+    #   → GNSS 수신 상태와 무관하게 고주파(50 Hz) odometry 보장.
+    # /odometry/global 사용 시: GNSS 위치 도약(jump) 발생 구간에서
+    #   MPPI가 오동작할 수 있으므로 local을 권장.
+    odom_topic: /odometry/local
+
+    # ── costmap 갱신 타임아웃 ─────────────────────────────────────────────────
+    # costmap이 이 시간(s) 안에 갱신되지 않으면 controller_server가 실패 처리.
+    # CARLA sim time에서 LiDAR 콜백 지연이 발생하므로 기본값 0.30 s 유지.
+    costmap_update_timeout: 0.30
+
+    # ── 정지 판정 임계값 ──────────────────────────────────────────────────────
+    # 이 값 이하의 선속도/각속도는 "정지 상태"로 간주.
+    # progress_checker가 차량 이동 여부를 판단할 때 사용.
+    # 값이 너무 크면 느린 크리핑 주행도 "정지"로 오판할 수 있음.
+    min_x_velocity_threshold: 0.001     # m/s
+    min_theta_velocity_threshold: 0.001 # rad/s
+
+    # ── 실패 허용 시간 ────────────────────────────────────────────────────────
+    # 유효한 cmd_vel 을 이 시간(s) 동안 생성하지 못하면 실패 처리.
+    # MPPI가 수렴하지 못하거나 costmap에 차량 위치가 없을 때 빠른 실패 감지.
+    failure_tolerance: 1.5
+
+    # ── 플러그인 목록 ─────────────────────────────────────────────────────────
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins:     ["goal_checker"]
+    controller_plugins:       ["FollowPath"]
+    path_handler_plugins:     ["PathHandler"]
+
+    # =========================================================================
+    # progress_checker
+    # 차량이 실제로 이동하는지 감시. 막힌 상황을 감지해 빠른 실패 처리를 한다.
+    # =========================================================================
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      # movement_time_allowance 동안 required_movement_radius 이상 이동하지
+      # 않으면 "진행 없음(stuck)"으로 판정 → FollowPath goal 실패 반환.
+      # 예: 10 s 동안 0.5 m 이상 이동하지 않으면 실패.
+      required_movement_radius: 0.5    # m
+      movement_time_allowance:  10.0   # s
+
+    # =========================================================================
+    # goal_checker
+    # 목표 지점(path 마지막 pose) 도달 여부를 판정한다.
+    # =========================================================================
+    goal_checker:
+      stateful: true      # 한 번 도달 판정이 나면 속도와 무관하게 성공 유지
+      plugin: "nav2_controller::SimpleGoalChecker"
+      # GNSS RTK 오차 ~0.1 m 대비 충분한 허용 반경 설정.
+      # 값이 너무 작으면 GNSS 오차로 인해 목표 도달을 못하는 상황 발생.
+      xy_goal_tolerance:  0.5          # m  (수평 거리 오차 허용)
+      yaw_goal_tolerance: 0.3          # rad (≈17°, 정밀 주차가 아닌 경로 추종용)
+
+    # =========================================================================
+    # PathHandler
+    # 전체 경로(global path) 중 현재 위치 이후의 관련 구간만 잘라서 MPPI에 전달.
+    # =========================================================================
+    PathHandler:
+      plugin: "nav2_controller::FeasiblePathHandler"
+      # 이미 지나친 waypoint 는 prune_distance(m) 이상 뒤에 있으면 제거(pruning).
+      # 값이 너무 작으면 약간의 오차에도 waypoint가 빠지고,
+      # 너무 크면 이미 지난 구간을 계속 추종하려 할 수 있음.
+      prune_distance: 5.0              # m
+      enforce_path_inversion: false    # 후진 경로 강제 비활성화
+      reject_unit_path: false          # 단일 waypoint 경로 허용
+
+    # =========================================================================
+    # FollowPath — MPPI Controller 플러그인
+    # =========================================================================
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+
+      # ── 경로 탐색 반경 ────────────────────────────────────────────────────
+      # MPPI path_handler 가 경로 pose 를 탐색할 최대 반경.
+      # 기본값: getMaxCostmapDist() = max(width,height)/2 = 10 m.
+      # CSV 경로의 첫 waypoint 가 로봇 시작점(datum)에서 ~11.35 m 떨어져 있으므로
+      # 기본값 10 m 으로는 0 poses 에러 발생 → 30 m 으로 확장.
+      max_robot_pose_search_dist: 30.0    # m
+
+      # ── 예측 수평선 ───────────────────────────────────────────────────────
+      # 예측 구간 = time_steps × model_dt
+      #          = 56 × 0.05 s = 2.8 s
+      # vx_max = 5 m/s 기준 2.8 s 동안 이동 거리 = 14 m → 충분한 예측 거리.
+      # time_steps 증가 시: 더 긴 예측 → 급커브 사전 감지 가능, but 계산 증가.
+      time_steps: 56
+      # model_dt = 1 / controller_frequency (반드시 일치시킬 것)
+      model_dt:   0.05                 # s
+
+      # ── 샘플 궤적 수 ──────────────────────────────────────────────────────
+      # CPU 환경에서 1000~2000 적절. GPU 가속 시 4096 이상 권장.
+      # 숫자가 클수록: 더 다양한 궤적 탐색 → 최적 궤적 품질 향상
+      # 숫자가 작을수록: 계산 시간 단축 → 실시간 여유 확보
+      batch_size: 2000
+
+      # ── 닫힌루프 모드 ─────────────────────────────────────────────────────
+      # false(닫힌루프): 각 time_step 마다 실제 차량 odometry를 반영해 롤아웃.
+      #   CARLA 물리 엔진처럼 실제 피드백이 있는 환경에서는 false 권장.
+      # true(열린루프): 차량 모델만으로 롤아웃, odometry 미반영. 빠르지만 부정확.
+      open_loop: false
+
+      # ── 가속도 한계 ───────────────────────────────────────────────────────
+      # MPPI가 생성하는 후보 궤적의 가속도를 이 범위로 클리핑.
+      # CARLA microlino 실차 가속 성능 기준.
+      ax_max:  2.0                     # m/s²  (최대 전방 가속도)
+      ax_min: -3.0                     # m/s²  (최대 감속도; 브레이크 기준)
+      az_max:  1.5                     # rad/s² (최대 yaw 가속도)
+
+      # ── 탐색 노이즈 표준편차 ──────────────────────────────────────────────
+      # 각 후보 궤적 제어 입력에 추가하는 가우시안 노이즈 크기.
+      # vx_std: 속도 샘플링 폭. 너무 크면 속도 불안정, 너무 작으면 탐색 부족.
+      # wz_std: 조향 샘플링 폭. 조향 진동(oscillation) 발생 시 0.2 이하로 감소.
+      vx_std: 0.3                      # m/s
+      wz_std: 0.3                      # rad/s
+
+      # ── 속도 범위 ─────────────────────────────────────────────────────────
+      # vx_max: 초기 테스트는 반드시 낮은 값(2.0~3.0)에서 시작.
+      #   주행이 안정적으로 확인되면 단계적으로 높인다.
+      # vx_min: 소폭 후진 허용 (경로 시작점 재접근 등).
+      # wz_max: min_turning_r 과 물리적으로 일관되어야 함.
+      #   wz_max = vx_max / min_turning_r = 5.0 / 3.3 ≈ 1.5 rad/s
+      vx_max:  5.0                     # m/s  ← 처음엔 2.0으로 시작 권장
+      vx_min: -0.5                     # m/s
+      wz_max:  1.5                     # rad/s
+
+      # ── MPPI 반복 횟수 ────────────────────────────────────────────────────
+      # 1 제어 주기 안에서 최적화를 몇 번 수행할지.
+      # 1: 실시간 성능 부족 환경 표준값.
+      # 2~3: 계산 여유 있을 때 최적 궤적 품질 향상.
+      iteration_count: 1
+
+      # ── temperature (중요 파라미터) ───────────────────────────────────────
+      # MPPI의 softmax 가중치 날카로움 조절 (MPPI 알고리즘의 λ).
+      # 낮을수록(→0): 최저 비용 궤적 하나에 집중 (greedy, 공격적).
+      # 높을수록(→∞): 여러 궤적을 부드럽게 평균 (smooth, 보수적).
+      # 도심 주행 시작값: 0.3.
+      # 좁은 구간에서 진동 발생 시: 0.1~0.2로 낮춤.
+      temperature: 0.3
+
+      # ── gamma (discount factor) ───────────────────────────────────────────
+      # 미래 단계 비용에 대한 할인율 (MPPI 논문의 γ).
+      # 작을수록 먼 미래 비용을 덜 고려 (단기 최적화 우선).
+      gamma: 0.015
+
+      # ── 시각화 ───────────────────────────────────────────────────────────
+      # true: /trajectories 토픽으로 모든 후보 궤적 발행 → RViz2 확인 가능.
+      # 성능 부족 환경에서는 false 로 전환해 CPU 절약.
+      visualize: true
+
+      # ── 노이즈 재생성 ────────────────────────────────────────────────────
+      # true: 매 제어 주기마다 새 노이즈 샘플 생성 (탐색 다양성 최대화).
+      # false: 이전 노이즈 재사용 (계산 절약, but 탐색 다양성 감소).
+      regenerate_noises: true
+
+      # ── 운동 모델 ────────────────────────────────────────────────────────
+      # "ackermann": 차량형(4륜 조향) 플랫폼 필수 설정.
+      #   diff_drive 사용 시: 제자리 회전 등 실제 차량이 불가능한 궤적 허용 →
+      #   cmd_vel 추종 불가, 차량 손상 위험.
+      motion_model: "Ackermann"
+      ackermann:
+        plugin: "mppi::AckermannMotionModel"
+        # 최소 회전반경 (m): MPPI가 생성하는 궤적의 곡률 상한을 결정.
+        # 이 값보다 급격한 회전 궤적은 물리적으로 불가능하므로 폐기됨.
+        #
+        # microlino 실차 spec: 회전반경 ≈ 3.3 m
+        # CARLA에서 측정 방법:
+        #   1) 최대 조향각으로 원 주행
+        #   2) ros2 topic echo /odometry/local 로 위치 궤적 기록
+        #   3) 원의 반경 계산
+        #
+        # 값이 너무 작으면: MPPI가 물리적으로 불가능한 급선회 허용 → 실제 추종 불가
+        # 값이 너무 크면: 급커브 구간에서 경로 이탈
+        min_turning_r: 3.3             # m  ← CARLA 실측 후 반드시 수정
+
+      # ── 궤적 검증기 ──────────────────────────────────────────────────────
+      TrajectoryValidator:
+        plugin: "mppi::DefaultOptimalTrajectoryValidator"
+        collision_lookahead_time: 2.0  # s: 이 시간 안에 충돌 예측 시 궤적 폐기
+        # false: 차량 중심점(point) 기반 충돌 체크 (빠름, 초기 테스트 권장)
+        # true : 차량 footprint 기반 (정확하지만 계산 비용 높음)
+        consider_footprint: false
+
+      # =========================================================================
+      # Critics — 후보 궤적에 비용을 부여하는 함수들
+      # 각 Critic의 cost_weight 가 높을수록 해당 기준이 최적 궤적 선택에 강하게 영향.
+      # 합산 비용이 가장 낮은 궤적이 cmd_vel 로 출력됨.
+      # =========================================================================
+      critics:
+        [
+          "ConstraintCritic",   # 물리 제약 위반 패널티
+          "GoalCritic",         # 목표 지점 접근 보상
+          "GoalAngleCritic",    # 목표 지점 도달 시 heading 정렬
+          "PathAlignCritic",    # 경로와 평행 주행 보상 (가장 중요)
+          "PathFollowCritic",   # 경로 앞 waypoint 추적 보상
+          "PathAngleCritic",    # 경로 방향과 heading 정렬
+          "PreferForwardCritic",# 전진 선호 (후진 억제)
+        ]
+
+      # ConstraintCritic
+      # 속도(vx_min~vx_max)·조향(wz_max) 범위를 벗어나는 궤적에 패널티.
+      # cost_weight 높을수록 물리 제약을 항상 준수. 낮추면 경계선 궤적도 허용.
+      ConstraintCritic:
+        enabled: true
+        cost_weight: 4.0
+        cost_power: 1
+
+      # GoalCritic
+      # 예측 수평선 끝(time_steps 번째 pose)이 목표 지점과 가까울수록 낮은 비용.
+      # threshold_to_consider: 목표 2.0 m 이내에서만 활성화.
+      #   (멀리 있을 때는 PathFollowCritic이 경로 추종을 담당)
+      GoalCritic:
+        enabled: true
+        cost_weight: 5.0
+        cost_power: 1
+        threshold_to_consider: 2.0    # m: 목표 2.0 m 이내에서만 활성화
+
+      # GoalAngleCritic
+      # 목표 지점 최종 접근 시 차량 heading을 목표 pose 방향으로 정렬.
+      # threshold_to_consider: 매우 가까운 거리(1.0 m)에서만 활성화.
+      GoalAngleCritic:
+        enabled: true
+        cost_weight: 3.0
+        cost_power: 1
+        threshold_to_consider: 1.0    # m
+
+      # PathAlignCritic (가장 중요한 critic)
+      # 궤적이 전체 경로와 평행하게 달릴수록 낮은 비용.
+      # cost_weight: 14.0 — 다른 critic 중 가장 높음 → 경로 이탈 방지 최우선.
+      # max_path_occupancy_ratio: 경로 waypoint의 이 비율 이상이 costmap
+      #   장애물 안에 있으면 이 critic 비활성화 (경로 자체가 장애물과 겹친 경우).
+      # trajectory_point_step: 궤적 평가 시 이 간격으로 샘플링 (계산 절약).
+      PathAlignCritic:
+        enabled: true
+        cost_weight: 14.0
+        cost_power: 1
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+
+      # PathFollowCritic
+      # 경로상 현재 위치 앞의 waypoint를 향해 이동할수록 낮은 비용.
+      # offset_from_furthest: MPPI 예측 구간 내에서 도달 가능한 가장 먼
+      #   waypoint에서 5번째 앞 waypoint를 추적 목표로 설정.
+      #   값을 높이면(8~10) 더 먼 waypoint 추적 → 빠른 진행.
+      #   값을 낮추면(3~4) 더 가까운 waypoint 추적 → 느리지만 정밀.
+      PathFollowCritic:
+        enabled: true
+        cost_weight: 5.0
+        cost_power: 1
+        offset_from_furthest: 5
+
+      # PathAngleCritic
+      # 경로 방향(waypoint-to-waypoint heading)과 차량 heading 을 정렬.
+      # 급커브 진입 전에 차량을 미리 회전시키는 효과.
+      # max_angle_to_furthest: 이 각도 이상 경로 방향이 틀어지면 비활성화.
+      # forward_preference: true → 전진 방향 heading 선호.
+      PathAngleCritic:
+        enabled: true
+        cost_weight: 2.0
+        cost_power: 1
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.2    # rad (≈69°)
+        forward_preference: true
+
+      # PreferForwardCritic
+      # 후진보다 전진 궤적을 선호.
+      # 후진이 전혀 필요 없는 환경에서는 cost_weight를 높여 후진 완전 억제 가능.
+      PreferForwardCritic:
+        enabled: true
+        cost_weight: 5.0
+        cost_power: 1
+        threshold_to_consider: 0.5   # m: 이 거리 이상 목표가 있을 때만 활성화
+
+
+# =============================================================================
+# local_costmap
+# 차량 주변 장애물 격자 지도. MPPI가 궤적 비용 계산 시 이 costmap을 참조.
+# CostCritic 을 사용하지 않는 현재 설정에서는 장애물 회피 기능 없음.
+# 장애물 회피가 필요하면 critics 목록에 "CostCritic" 추가 필요.
+# =============================================================================
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: true
+
+      # ── 갱신 주파수 ───────────────────────────────────────────────────────
+      # LiDAR 발행 주파수(20 Hz)의 절반으로 설정.
+      # 너무 높으면 CPU 부하 급증; 너무 낮으면 장애물 감지 지연.
+      update_frequency:  10.0          # Hz
+      publish_frequency: 10.0          # Hz
+
+      # ── 기준 프레임 ───────────────────────────────────────────────────────
+      # local costmap은 odom 프레임 기준.
+      # MPPI가 odom 프레임에서 궤적을 롤아웃하므로 반드시 일치시킬 것.
+      global_frame: odom
+      robot_base_frame: base_link
+
+      # ── 롤링 창 ──────────────────────────────────────────────────────────
+      # true: 차량 중심으로 창이 이동 (local costmap 표준 설정).
+      rolling_window: true
+
+      # ── 지도 크기 및 해상도 ───────────────────────────────────────────────
+      # 20 m × 20 m: vx_max=5 m/s, time_steps=56, model_dt=0.05 s
+      #   → 예측 거리 = 14 m → 20 m는 전방 후방 여유 포함 적정 크기.
+      # 0.1 m/cell: lidar_2d 정밀도(≈0.05 m)의 2배 → 충분한 해상도.
+      width:       20                  # m
+      height:      20                  # m
+      resolution:   0.1                # m/cell  (200 × 200 격자)
+
+      # ── TF 지연 허용 ────────────────────────────────────────────────────
+      # CARLA sim time 환경에서 TF 발행 지연 허용.
+      # "Could not get transform" 에러 발생 시 0.5 로 증가.
+      transform_tolerance: 0.3         # s
+
+      # ── 레이어 목록 ────────────────────────────────────────────────────
+      plugins: ["obstacle_layer", "inflation_layer"]
+
+      # ── obstacle_layer ────────────────────────────────────────────────
+      # LiDAR 포인트 클라우드를 읽어 장애물 격자 생성.
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: lidar_2d
+
+        lidar_2d:
+          # stack.json 에 정의된 lidar_2d 센서 토픽.
+          # 채널 수: 1 (수평 2D scan), range: 40 m, 주파수: 20 Hz
+          topic: /carla/car/lidar_2d/point_cloud
+          data_type: PointCloud2
+
+          # 2D LiDAR → 높이 정보 없음. max_obstacle_height 넓게 설정.
+          max_obstacle_height: 2.0     # m
+          min_obstacle_height: 0.0     # m
+
+          # clearing: scan line 상의 빈 공간(포인트 없는 방향) 격자를 비움.
+          # marking:  포인트가 있는 위치의 격자를 장애물로 마킹.
+          # 두 옵션 모두 true 여야 이동하는 장애물도 올바르게 추적됨.
+          clearing: true
+          marking:  true
+
+          # raytrace_max_range: 이 거리 이상의 격자는 레이캐스팅으로 비움.
+          #   lidar_2d range(40 m)의 절반으로 설정 → 원거리 오검출 방지.
+          # obstacle_max_range: 이 거리 이상의 포인트는 장애물로 마킹 안 함.
+          #   lidar 정확도가 높은 15 m 이내만 신뢰.
+          raytrace_max_range: 20.0     # m
+          obstacle_max_range: 15.0     # m
+
+      # ── inflation_layer ───────────────────────────────────────────────
+      # 장애물 격자 주변으로 비용을 팽창시켜 MPPI에 안전 여유 공간을 부여.
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+
+        # inflation_radius: 장애물에서 이 반경 이내까지 비용 팽창.
+        # 계산 근거: microlino 차폭(1.475 m) / 2 + 안전 여유(0.76 m) ≈ 1.5 m
+        # 값이 크면: MPPI가 장애물을 더 넓게 회피 (안전하지만 좁은 통로 통과 불가)
+        # 값이 작으면: 좁은 통로 통과 가능하지만 충돌 여유 감소
+        inflation_radius: 1.5          # m  ← 차량 폭 기준으로 조정 필요
+        # cost_scaling_factor: 거리에 따른 비용 감소 비율 (지수 decay).
+        # 높을수록: 장애물 가까이서만 높은 비용 (좁은 팽창 효과)
+        # 낮을수록: 멀리서부터 완만하게 비용 감소 (넓은 팽창 효과)
+        cost_scaling_factor: 3.0
+
+      # RViz2 에서 costmap을 실시간으로 확인하려면 true 로 유지.
+      # 성능 부족 시 false 로 전환하면 변경된 셀만 발행.
+      always_send_full_costmap: true

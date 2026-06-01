@@ -2055,12 +2055,19 @@ ros2 launch gnss_to_utm csv_to_utm.launch.py
 ```
 
 ##### 터미널 7 — Nav2 controller_server (MPPI)
-
-```bash
+<!--
 source /opt/ros/humble/setup.bash
 source ~/carla/nav2_ws/install/setup.bash    # OpenMP 빌드 버전 로드 (apt 버전보다 우선)
 source ~/carla/mppi_ws/install/setup.bash
 export OMP_NUM_THREADS=8                     # MPPI 병렬 스레드 수 (권장 시작값)
+ros2 launch dual_filter controller.launch.py
+-->
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/carla/nav2_ws/install/setup.bash
+source ~/carla/mppi_ws/install/setup.bash
+export OMP_NUM_THREADS=8
 ros2 launch dual_filter controller.launch.py
 ```
 
