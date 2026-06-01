@@ -614,10 +614,10 @@ global_ekf:
 
 ### 6.1 워크스페이스 구조
 
-구현 워크스페이스: `/home/hannibal/carla/mppi/`
+구현 워크스페이스: `/home/hannibal/carla/mppi_ws/`
 
 ```text
-mppi/
+mppi_ws/
 ├── src/
 │   ├── gnss_to_utm/             ← ament_cmake C++ 패키지
 │   │   ├── src/
@@ -673,7 +673,7 @@ mppi/
 
 ### 6.3 `ros2_sensor.py` 센서 브리지 노드
 
-파일: `PythonAPI/examples/ros2_sensor/ros2_sensor.py`
+파일: `ros2_sensor/ros2_sensor.py`
 
 이 노드는 CARLA 센서 데이터를 ROS 2 토픽으로 발행하고, EKF 입력에 필요한 `/odometry/wheel`과 `/clock`도 함께 만든다.
 
@@ -1085,9 +1085,9 @@ void encoderISR() {
 
 ### 9.3 시리얼 브리지 (`serial_bridge`) 구현
 
-파일: `mppi/src/serial_bridge/serial_bridge/serial_bridge.py`
+파일: `mppi_ws/src/serial_bridge/serial_bridge/serial_bridge.py`
 
-패키지: `mppi/src/serial_bridge/`
+패키지: `mppi_ws/src/serial_bridge/`
 
 #### 역할
 
@@ -1156,13 +1156,13 @@ serial_bridge:
 | 조향각 원천 | 없음 | POT 측정 실측값 (raw_deg, PS) |
 | 타임스탬프 | CARLA simulation time (/clock) | ROS2 wall time (get_clock().now()) |
 | 발행 노드 | `ros2_sensor.py` | `serial_bridge` |
-| 패키지 위치 | `PythonAPI/examples/ros2_sensor/` | `mppi/src/serial_bridge/` |
+| 패키지 위치 | `ros2_sensor/` | `mppi_ws/src/serial_bridge/` |
 
 > **주의:** 실제 하드웨어 실행 시 `use_sim_time: false`로 설정해야 한다. CARLA 시뮬레이션에서만 `use_sim_time: true`를 사용한다. 두 환경을 혼합하면 EKF 적분 시간 오류가 발생한다.
 
 ### 9.5 패키지 의존성
 
-`mppi/src/serial_bridge/package.xml`:
+`mppi_ws/src/serial_bridge/package.xml`:
 
 ```xml
 <depend>rclpy</depend>
@@ -1173,7 +1173,7 @@ serial_bridge:
 빌드:
 
 ```bash
-cd ~/carla/mppi
+cd ~/carla/mppi_ws
 colcon build --packages-select serial_bridge --symlink-install
 source install/setup.bash
 ```
@@ -1200,7 +1200,7 @@ ros2 run serial_bridge serial_bridge
 
 ### 10.1 현재 상태 요약
 
-아래 분석은 `/home/hannibal/carla/mppi/` 워크스페이스의 빌드 결과물과 소스 코드를 실제로 비교하여 작성한 것이다.
+아래 분석은 `/home/hannibal/carla/mppi_ws/` 워크스페이스의 빌드 결과물과 소스 코드를 실제로 비교하여 작성한 것이다.
 
 #### 충족 항목 (dual_filter 스택)
 
@@ -1223,16 +1223,16 @@ ros2 run serial_bridge serial_bridge
 | 항목 | 상태 | 설명 |
 | :--- | :---: | :--- |
 | Nav2 패키지 설치 | ✅ | `nav2_controller`, `nav2_mppi_controller`, `nav2_costmap_2d`, `nav2_lifecycle_manager` 1.1.20 apt 설치 완료 |
-| controller_server 설정 파일 | ✅ | `mppi/src/dual_filter/config/nav2_carla_params.yaml` 작성 완료. controller_server 3계층(제어루프·MPPI플러그인·local_costmap) + 7개 critic 설정. 차량별 튜닝 필수값: `min_turning_r`, `vx_max` |
-| `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(wz·L, vx)) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
-| global path 공급 | ✅ | `mppi/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. `/csv_path` transient_local 구독 → FollowPath action goal 전송. action 수락 시 MPPI 경로 추종 시작 |
+| controller_server 설정 파일 | ✅ | `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml` 작성 완료. controller_server 3계층(제어루프·MPPI플러그인·local_costmap) + 7개 critic 설정. 차량별 튜닝 필수값: `min_turning_r`, `vx_max` |
+| `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(wz·L, vx)) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
+| global path 공급 | ✅ | `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. `/csv_path` transient_local 구독 → FollowPath action goal 전송. action 수락 시 MPPI 경로 추종 시작 |
 | local costmap 설정 | ✅ | `nav2_carla_params.yaml` 안에 포함. obstacle_layer(`/carla/car/lidar_2d/point_cloud`) + inflation_layer(1.5 m) 구성. CostCritic 미사용 상태이므로 장애물 회피 비활성. 장애물 회피 활성화 시 critics 목록에 `CostCritic` 추가 필요 |
 
 ---
 
 #### 10.1.1 `nav2_carla_params.yaml` 상세
 
-파일 위치: `mppi/src/dual_filter/config/nav2_carla_params.yaml`
+파일 위치: `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml`
 
 파일은 `controller_server` → `MPPI 플러그인(FollowPath)` → `local_costmap` 의 3계층으로 구성된다.
 
@@ -1565,7 +1565,7 @@ PathAlignCritic: "경로 선과 얼마나 평행하게 달릴 것인가"
 
 #### 10.1.2 `cmd_vel_to_carla.py` 상세
 
-파일 위치: `mppi/src/dual_filter/dual_filter/cmd_vel_to_carla.py`
+파일 위치: `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py`
 
 MPPI가 출력하는 `/cmd_vel` (`geometry_msgs/Twist`)을 CARLA `VehicleControl`로 변환하는 노드.
 
@@ -1598,7 +1598,7 @@ steer = clip(δ / max_steer_rad, −1, 1)   (CARLA 정규화값)
 cd ~/carla
 source .venv/bin/activate
 source /opt/ros/humble/setup.bash
-source mppi/install/setup.bash
+source mppi_ws/install/setup.bash
 ros2 run dual_filter cmd_vel_to_carla \
   --ros-args -p use_sim_time:=true \
   -- --rolename car --wheelbase 1.47
@@ -1617,7 +1617,7 @@ ros2 run dual_filter cmd_vel_to_carla \
 
 #### 10.1.3 `follow_path_client.py` 상세
 
-파일 위치: `mppi/src/dual_filter/dual_filter/follow_path_client.py`
+파일 위치: `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py`
 
 `csv_to_utm`이 발행하는 `/csv_path`를 받아 `controller_server`의 `FollowPath` action에 goal을 전송하는 노드.
 
@@ -1651,7 +1651,7 @@ ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
 
 #### 10.1.4 CSV 경로 스플라인 보간 도구 (`csv_interpolater.py`)
 
-파일 위치: `mppi/src/gnss_to_utm/src/csv_interpolater.py`
+파일 위치: `mppi_ws/src/gnss_to_utm/src/csv_interpolater.py`
 
 ##### MPPI에서 스플라인 보간이 필수인 이유
 
@@ -1717,7 +1717,7 @@ PathAngleCritic은 "현재 차량 heading vs 경로 방향" 오차를 최소화�
 
 ```bash
 # ROS 환경 불필요. 시스템 Python3 또는 .venv 어디서나 실행 가능.
-cd ~/carla/mppi/src/gnss_to_utm/src
+cd ~/carla/mppi_ws/src/gnss_to_utm/src
 
 # 기본 (10 cm 간격)
 python3 csv_interpolater.py /path/to/input.csv /path/to/output_10cm.csv
@@ -1732,7 +1732,7 @@ python3 csv_interpolater.py input.csv output.csv --interval 0.1 --plot
 ##### 보간 결과 csv_to_utm 에 적용
 
 ```yaml
-# mppi/src/gnss_to_utm/config/csv_to_utm.yaml
+# mppi_ws/src/gnss_to_utm/config/csv_to_utm.yaml
 csv_to_utm:
   ros__parameters:
     use_sim_time: true
@@ -1761,8 +1761,8 @@ MPPI가 추종할 경로는 **실제 주행 데이터를 녹화 → UTM CSV 변�
 
 | 스크립트 | 경로 |
 | :--- | :--- |
-| `f9r_to_csv.py` | `mppi/src/gnss_to_utm/src/f9r_to_csv.py` |
-| `csv_interpolater.py` | `mppi/src/gnss_to_utm/src/csv_interpolater.py` |
+| `f9r_to_csv.py` | `mppi_ws/src/gnss_to_utm/src/f9r_to_csv.py` |
+| `csv_interpolater.py` | `mppi_ws/src/gnss_to_utm/src/csv_interpolater.py` |
 
 ---
 
@@ -1773,7 +1773,7 @@ MPPI가 추종할 경로는 **실제 주행 데이터를 녹화 → UTM CSV 변�
 ```bash
 # 저장 경로는 자유롭게 지정
 ros2 bag record /carla/car/f9r/fix \
-  -o ~/carla/mppi/src/gnss_to_utm/gnss_data/ros2bag/route_1
+  -o ~/carla/mppi_ws/src/gnss_to_utm/gnss_data/ros2bag/route_1
 ```
 
 | 항목 | 내용 |
@@ -1796,7 +1796,7 @@ ros2 bag record /carla/car/f9r/fix \
 # bag_path  : 녹화한 bag 디렉토리 경로 (확장자 없이)
 # csv_path  : 출력 CSV 경로 (자동 생성됨)
 
-cd ~/carla/mppi/src/gnss_to_utm/src
+cd ~/carla/mppi_ws/src/gnss_to_utm/src
 python3 f9r_to_csv.py
 ```
 
@@ -1804,8 +1804,8 @@ python3 f9r_to_csv.py
 
 ```python
 # f9r_to_csv.py 17~24번째 줄
-bag_path = "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/ros2bag/route_1"
-csv_path = "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_1.csv"
+bag_path = "/home/hannibal/carla/mppi_ws/src/gnss_to_utm/gnss_data/ros2bag/route_1"
+csv_path = "/home/hannibal/carla/mppi_ws/src/gnss_to_utm/gnss_data/csv/route_1.csv"
 ```
 
 실행 결과:
@@ -1837,7 +1837,7 @@ MPPI critic이 안정적으로 작동하려면 10 cm 등간격으로 재샘플�
 (이유는 [10.1.4](#1014-csv-경로-스플라인-보간-도구-csv_interpolaterpy) 참고).
 
 ```bash
-cd ~/carla/mppi/src/gnss_to_utm/src
+cd ~/carla/mppi_ws/src/gnss_to_utm/src
 
 # 기본 (10 cm 간격)
 python3 csv_interpolater.py \
@@ -1878,11 +1878,11 @@ python3 csv_interpolater.py \
 보간된 CSV를 `csv_to_utm.yaml`에 등록한다.
 
 ```yaml
-# mppi/src/gnss_to_utm/config/csv_to_utm.yaml
+# mppi_ws/src/gnss_to_utm/config/csv_to_utm.yaml
 csv_to_utm:
   ros__parameters:
     use_sim_time: true
-    csv_file_path: "/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv/route_1_10cm.csv"
+    csv_file_path: "/home/hannibal/carla/mppi_ws/src/gnss_to_utm/gnss_data/csv/route_1_10cm.csv"
 ```
 
 ---
@@ -1973,7 +1973,7 @@ dual_filter 스택이 빌드된 상태이고 Nav2가 설치된 상태를 전제�
 sudo apt install ros-humble-robot-localization
 
 # dual_filter / gnss_to_utm 패키지 빌드 (최초 1회 또는 소스 수정 후)
-cd ~/carla/mppi
+cd ~/carla/mppi_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-select dual_filter gnss_to_utm --symlink-install
 source install/setup.bash
@@ -2022,8 +2022,8 @@ python PythonAPI/examples/manual_control.py \
 cd ~/carla
 source /opt/ros/humble/setup.bash
 source .venv/bin/activate
-python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
-  -f PythonAPI/examples/ros2_sensor/stack.json \
+python ros2_sensor/ros2_sensor.py \
+  -f ros2_sensor/stack.json \
   --attach-existing --passive --python-ros2 \
   --base-frame base_link --wait-for-vehicle 30 \
   --sensors f9r f9p imu lidar_2d
@@ -2033,7 +2033,7 @@ python PythonAPI/examples/ros2_sensor/ros2_sensor.py \
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/carla/mppi/install/setup.bash
+source ~/carla/mppi_ws/install/setup.bash
 ros2 launch dual_filter dual_filter.launch.py
 ```
 
@@ -2041,7 +2041,7 @@ ros2 launch dual_filter dual_filter.launch.py
 
 ```bash
 source /opt/ros/humble/setup.bash
-rviz2 -d ~/carla/PythonAPI/examples/ros2_sensor/rviz/ros2_sensor.rviz \
+rviz2 -d ~/carla/ros2_sensor/rviz/ros2_sensor.rviz \
   --ros-args -p use_sim_time:=true
 ```
 
@@ -2050,7 +2050,7 @@ rviz2 -d ~/carla/PythonAPI/examples/ros2_sensor/rviz/ros2_sensor.rviz \
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/carla/mppi/install/setup.bash
+source ~/carla/mppi_ws/install/setup.bash
 ros2 launch gnss_to_utm csv_to_utm.launch.py
 ```
 
@@ -2058,9 +2058,14 @@ ros2 launch gnss_to_utm csv_to_utm.launch.py
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/carla/mppi/install/setup.bash
+source ~/carla/nav2_ws/install/setup.bash    # OpenMP 빌드 버전 로드 (apt 버전보다 우선)
+source ~/carla/mppi_ws/install/setup.bash
+export OMP_NUM_THREADS=8                     # MPPI 병렬 스레드 수 (권장 시작값)
 ros2 launch dual_filter controller.launch.py
 ```
+
+> **소싱 순서 중요**: `nav2_ws`를 `mppi_ws`보다 먼저 소싱해야 한다. 나중에 소싱한 워크스페이스가 앞의 것을 덮어쓰기 때문에, `nav2_ws` → `mppi_ws` 순서로 해야 OpenMP 버전 `libmppi_controller.so`가 `mppi_ws`의 `dual_filter` 패키지와 함께 올바르게 로드된다.
+> **`OMP_NUM_THREADS` 기준**: 24코어 기준 8로 시작. `ros2 topic hz /cmd_vel`이 설정한 `controller_frequency`에 미달하면 12로 높인다. 다른 노드(EKF, costmap 등)가 느려지면 4~6으로 낮춘다.
 
 > **`ros2 run` 대신 `ros2 launch`를 사용하는 이유**: `controller_server`는 Nav2 lifecycle node다.
 > `ros2 run`으로 직접 실행하면 UNCONFIGURED 상태로 머물러 `/follow_path` action server가
@@ -2076,7 +2081,7 @@ ros2 launch dual_filter controller.launch.py
 ```bash
 cd ~/carla
 source /opt/ros/humble/setup.bash
-source ~/carla/mppi/install/setup.bash
+source ~/carla/mppi_ws/install/setup.bash
 source .venv/bin/activate
 ros2 run dual_filter cmd_vel_to_carla \
   --ros-args -p use_sim_time:=true \
@@ -2087,7 +2092,7 @@ ros2 run dual_filter cmd_vel_to_carla \
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/carla/mppi/install/setup.bash
+source ~/carla/mppi_ws/install/setup.bash
 ros2 run dual_filter follow_path_client
 ```
 
@@ -2325,7 +2330,7 @@ CSV row 1924 : datum 기준 +22.65 m (경로 파일 끝)
 | 증상 | `FollowPath goal 수락됨` → 수십 ms 만에 `Reached the goal!`. 차량이 전혀 이동하지 않음. |
 | 에러 | `[tf_help]: Transform data too old … Data time: 1780166575s, Transform time: 463s` |
 | 원인 | `csv_to_utm` 노드가 `use_sim_time` 미설정 → `path.header.stamp = this->get_clock()->now()` 가 **벽시계(wall clock) 시간**(~1780166575 s)을 반환. 반면 `controller_server` / 글로벌 EKF는 `use_sim_time: true` → TF는 **CARLA 시뮬레이션 시간**(~463 s)으로 발행. 두 클록이 완전히 달라 `utm→odom` TF 조회 실패. TF 조회 실패 시 MPPI 는 유효한 path pose 를 0개로 보고, SimpleGoalChecker 가 즉시 도달 판정. |
-| 수정 파일 | `mppi/src/gnss_to_utm/src/csv_to_utm.cpp` |
+| 수정 파일 | `mppi_ws/src/gnss_to_utm/src/csv_to_utm.cpp` |
 | 수정 내용 | `path.header.stamp = this->get_clock()->now()` → `path.header.stamp = rclcpp::Time(0)` |
 
 `rclcpp::Time(0)` 의 의미: TF 시스템에 "현재 시각의 최신 변환을 사용하라"는 요청. 시뮬레이션/벽시계 클록 불일치와 TF 버퍼 만료 문제를 동시에 해결. 사전 녹화 경로(static path)에 표준적으로 사용하는 패턴.
@@ -2340,7 +2345,7 @@ path.header.stamp = rclcpp::Time(0);           // 최신 TF 사용 (클록 무�
 
 | 확인 방법 | 내용 |
 | :--- | :--- |
-| 빌드 | `cd ~/carla/mppi && colcon build --packages-select gnss_to_utm --symlink-install` |
+| 빌드 | `cd ~/carla/mppi_ws && colcon build --packages-select gnss_to_utm --symlink-install` |
 | 정상 로그 | controller_server 에서 `Reached the goal!` 없이 MPPI 제어 루프 지속 실행 |
 
 ---
@@ -2354,8 +2359,108 @@ path.header.stamp = rclcpp::Time(0);           // 최신 TF 사용 (클록 무�
 | 원인 | MPPI 궤적 계산(CPU 단일 스레드)이 한 제어 주기(50 ms)를 초과. 제어 루프가 실제 시간보다 뒤처지면서 TF 조회 시 요청 시각이 TF 버퍼의 최신 데이터보다 50 ms 미래가 됨 → 하드 예외 발생 → 즉시 ABORT. `failure_tolerance` 타이머와 무관한 hard-error 경로로 종료됨 |
 | 원인 수치 | `batch_size=2000, time_steps=56, controller_frequency=20 Hz` 기준 약 60 ms 소요 → 20 Hz 예산(50 ms) 초과 |
 | 해결 A (즉시 적용) | `nav2_carla_params.yaml` 에서 계산량 감소: `batch_size: 2000 → 1000`, `time_steps: 56 → 40`, `visualize: false`, `controller_frequency: 10.0`, `model_dt: 0.10` |
-| 해결 B (근본 해결) | nav2_mppi_controller 소스 빌드 + OpenMP 활성화: `colcon build --packages-select nav2_mppi_controller --cmake-args -DWITH_OPENMP=ON`. i7-13700HX 24 스레드 기준 약 10x 속도 향상 기대 |
+| 해결 B (근본 해결) | nav2_mppi_controller 소스 빌드 + OpenMP 활성화 → [Section 10.4.7](#1047-nav2_mppi_controller-openmp-빌드-연산-과다-근본-해결) 참고. i7-13700HX 24 스레드 기준 약 10x 속도 향상 기대 |
 | 확인 | `ros2 topic hz /cmd_vel` → 설정한 `controller_frequency` 에 근접하는지 확인 |
+
+---
+
+### 10.4.7 nav2_mppi_controller OpenMP 빌드 (연산 과다 근본 해결)
+
+오류 ⑦에서 소개한 "해결 B — 근본 해결"의 구체적인 방법이다. apt로 설치된 기본 nav2_mppi_controller는 OpenMP가 비활성화된 상태로 빌드되어 있어 CPU 코어를 1개만 사용한다. 소스를 수정하여 OpenMP를 활성화하면 24코어(i7-13700HX 기준) 병렬 연산으로 약 10x 속도 향상을 기대할 수 있다.
+
+#### 워크스페이스 구조
+
+```text
+~/carla/nav2_ws/
+├── src/
+│   └── navigation2/
+│       └── nav2_mppi_controller/
+│           └── CMakeLists.txt    ← 아래와 같이 수정
+├── build/
+├── install/
+└── log/
+```
+
+#### CMakeLists.txt 수정 내용
+
+파일: `nav2_ws/src/navigation2/nav2_mppi_controller/CMakeLists.txt`
+
+```cmake
+# 수정 전 (기본값)
+set(XTENSOR_USE_OPENMP 0)
+
+# 수정 후 — 3가지를 모두 추가/변경해야 한다
+add_definitions(-DXTENSOR_USE_OPENMP)    # C++ 전처리기 매크로 직접 정의 (핵심)
+set(XTENSOR_USE_OPENMP 1)
+find_package(OpenMP REQUIRED)            # OpenMP 패키지 탐색
+
+# foreach 루프 내 target_link_libraries 수정:
+target_include_directories(${lib} PUBLIC ${xsimd_INCLUDE_DIRS} ${OpenMP_CXX_INCLUDE_DIRS})
+target_link_libraries(${lib} xtensor xtensor::optimize xtensor::use_xsimd OpenMP::OpenMP_CXX)
+```
+
+> **`set(XTENSOR_USE_OPENMP 1)` 만으로는 불충분**: 이 값은 CMake 변수로만 존재하며 C++ 전처리기(`#ifdef XTENSOR_USE_OPENMP`)에 전달되지 않는다. 반드시 `add_definitions(-DXTENSOR_USE_OPENMP)`로 C++ 매크로를 직접 정의해야 xtensor의 OpenMP 분기가 활성화된다.
+
+#### 빌드
+
+cbr 별칭에 반영된 빌드 옵션들:
+
+| 옵션 | 이유 |
+| :--- | :--- |
+| `-DBUILD_TESTING=OFF` | `test_msgs` 의존성 제거 |
+| `-DCMAKE_CXX_FLAGS="-Wno-error=maybe-uninitialized"` | `dwb_plugins` 컴파일 경고 억제 |
+| `--parallel-workers 4` | 동시 패키지 빌드 수 제한 (OOM 방지) |
+| `--packages-ignore nav2_system_tests` | `gazebo_ros_pkgs` 의존성 제거 |
+
+```bash
+# nav2_ws 전체 빌드 (최초 또는 의존 패키지 변경 시)
+cd ~/carla/nav2_ws
+sr && sv
+cbr --packages-ignore nav2_system_tests
+
+# nav2_mppi_controller 단독 재빌드 (CMakeLists.txt 수정 후)
+rm -rf build/nav2_mppi_controller install/nav2_mppi_controller
+cbr --packages-select nav2_mppi_controller --allow-overriding nav2_mppi_controller
+```
+
+#### OpenMP 활성화 확인
+
+```bash
+# libgomp.so 동적 링크 확인 (출력이 있으면 성공)
+ldd ~/carla/nav2_ws/build/nav2_mppi_controller/libmppi_controller.so | grep gomp
+# 예상 출력: libgomp.so.1 => /lib/x86_64-linux-gnu/libgomp.so.1
+
+# GOMP_parallel 심볼 확인
+nm -D ~/carla/nav2_ws/build/nav2_mppi_controller/libmppi_controller.so | grep GOMP
+# 예상 출력: U GOMP_parallel@GOMP_4.0
+```
+
+#### 실행 시 OMP 스레드 수 설정
+
+`OMP_NUM_THREADS` 환경변수로 MPPI 연산에 사용할 스레드 수를 제한한다. 전체 코어를 사용하면 다른 ROS 노드(EKF, costmap 등)와 CPU를 두고 경합할 수 있다.
+
+```bash
+# controller_server 실행 전 설정 (터미널 7)
+export OMP_NUM_THREADS=8    # 24코어 중 8개 할당 (권장 시작값)
+ros2 launch dual_filter controller.launch.py
+```
+
+| 값 | 적합한 상황 |
+| :--- | :--- |
+| `4` | 다른 노드가 많이 실행되는 경우, 안정 우선 |
+| `8` | 일반 주행 (권장 시작값) |
+| `12` | MPPI 계산 성능 우선, GPU 없는 환경 |
+| 미설정 | 전체 코어 사용 → 다른 노드와 경합 가능성 |
+
+#### nav2_ws 소싱 (apt 버전 오버라이드)
+
+```bash
+# 매 터미널마다 nav2_ws를 mppi_ws보다 먼저 소싱해야 apt 버전이 아닌 OpenMP 버전이 로드됨
+source ~/carla/nav2_ws/install/setup.bash
+source ~/carla/mppi_ws/install/setup.bash
+```
+
+> nav2_ws를 소싱하지 않으면 apt 설치 버전(OpenMP 비활성)이 사용되어 오류 ⑦이 재발한다.
 
 ---
 
@@ -2392,3 +2497,5 @@ PathFollowCritic:
 # 또는 vx_max를 높임
 vx_max: 8.0
 ```
+
+#### 
