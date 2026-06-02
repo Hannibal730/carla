@@ -12,6 +12,7 @@ Panels:
         - /Lidar2D1
         - /CSV Reference Path1
         - /MarkerArray1
+        - /Local Costmap1
       Splitter Ratio: 0.6775068044662476
     Tree Height: 834
   - Class: rviz_common/Selection
@@ -152,7 +153,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Best Effort
-            Value: /carla/car/lidar/point_cloud
+            Value: /carla/car/lidar_3d/point_cloud
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
@@ -321,6 +322,20 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /trajectories
       Value: true
+    - Alpha: 0.5
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Local Costmap
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/costmap
+      Use Timestamp: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -367,7 +382,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 27.425575256347656
+      Distance: 17.55179786682129
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -382,10 +397,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4947969913482666
+      Pitch: 0.38979700207710266
       Target Frame: f9r
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.115396738052368
+      Yaw: 3.135396957397461
     Saved: ~
 Window Geometry:
   Displays:
