@@ -24,5 +24,5 @@ PythonAPI/**/*.py[cod]
 /Mandol_ws
 
 !/*.ino
-
+!/ros2_sensor
 !/nav2_ws/src/navigation2/nav2_mppi_controller/CMakeLists.txt
