@@ -262,12 +262,11 @@ class World(object):
                 print('There are no spawn points available in your map/town.')
                 print('Please add some Vehicle Spawn Point to your UE4 scene.')
                 sys.exit(1)
-            spawn_points = self.map.get_spawn_points()
-            # spawn_point = random.choice(spawn_points) if spawn_points else carla.Transform()
-            if spawn_points:
-                spawn_point = spawn_points[0]   # 여기 숫자를 바꾸면 다른 위치
-            else:
-                spawn_point = carla.Transform()
+            # Town01_Opt 고정 스폰 위치 (route_1.csv 기록 시점과 동일)
+            spawn_point = carla.Transform(
+                carla.Location(x=299.4, y=133.24, z=0.3),
+                carla.Rotation(yaw=0.0)
+            )
             self.player = self.world.try_spawn_actor(blueprint, spawn_point)
             self.show_vehicle_telemetry = False
             self.modify_vehicle_physics(self.player)
