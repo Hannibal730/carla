@@ -1226,7 +1226,7 @@ ros2 run serial_bridge serial_bridge
 | controller_server 설정 파일 | ✅ | `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml` 작성 완료. controller_server 3계층(제어루프·MPPI플러그인·local_costmap) + 7개 critic 설정. 차량별 튜닝 필수값: `min_turning_r`, `vx_max` |
 | `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(wz·L, vx)) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
 | global path 공급 | ✅ | `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. `/csv_path` transient_local 구독 → FollowPath action goal 전송. action 수락 시 MPPI 경로 추종 시작 |
-| local costmap 설정 | ✅ | `nav2_carla_params.yaml` 안에 포함. obstacle_layer(`/carla/car/lidar_2d/point_cloud`) + inflation_layer(1.5 m) 구성. CostCritic 미사용 상태이므로 장애물 회피 비활성. 장애물 회피 활성화 시 critics 목록에 `CostCritic` 추가 필요 |
+| local costmap 설정 | ✅ | `nav2_carla_params.yaml` 안에 포함. obstacle_layer(`/carla/car/lidar_2d/point_cloud`) + inflation_layer(1.5 m) + `CostCritic` 구성 완료. lidar_2d → obstacle_layer → inflation_layer → CostCritic 파이프라인 활성화. costmap은 `/local_costmap/costmap`으로 10 Hz 발행 중 |
 
 ---
 
@@ -1549,17 +1549,32 @@ PathAlignCritic: "경로 선과 얼마나 평행하게 달릴 것인가"
 | `obstacle_max_range` | 15.0 m | lidar_2d 정확도 신뢰 범위 |
 | `inflation_radius` | 1.5 m | 차폭 1.475 m / 2 + 안전 여유 0.76 m |
 
-> **CostCritic 없음**: 현재 critics 목록에 `CostCritic`이 없으므로 costmap이 구성되어 있어도 MPPI가 장애물 비용을 궤적 평가에 반영하지 않는다. 장애물 회피를 활성화하려면 critics 목록에 `"CostCritic"`을 추가하고 아래 설정을 넣는다.
->
-> ```yaml
-> CostCritic:
->   enabled: true
->   cost_weight: 3.81
->   cost_power: 1
->   consider_footprint: false
->   critical_cost: 300.0
->   inflation_layer_name: "inflation_layer"
-> ```
+**장애물 회피 파이프라인 (활성화 상태):**
+
+```text
+/carla/car/lidar_2d/point_cloud (PointCloud2, 1채널, 40 m, 20 Hz)
+        ↓ obstacle_layer (ObstacleLayer)
+  marking:  포인트 위치 → LETHAL_OBSTACLE(254)
+  clearing: 포인트 없는 방향 ray → FREE
+        ↓ inflation_layer (InflationLayer, radius 1.5 m)
+  장애물 주변 1.5 m 이내 셀 → 거리 비례 비용 (cost_scaling_factor 3.0)
+        ↓ CostCritic (10 Hz, odom 프레임, 20 m × 20 m rolling window)
+  각 후보 궤적의 통과 셀 비용 합산 → 장애물 근처 궤적 패널티
+```
+
+| CostCritic 파라미터 | 값 | 설명 |
+| :--- | :--- | :--- |
+| `cost_weight` | 3.81 | PathAlignCritic(14.0) 대비 낮게 → 경로 추종 우선, 회피 보조 |
+| `collision_cost` | 1000000.0 | LETHAL_OBSTACLE 셀 통과 시 사실상 해당 궤적 폐기 |
+| `critical_cost` | 300.0 | 차량 중심이 inflation 내곽 경계(INSCRIBED) 위일 때 강한 패널티 |
+| `consider_footprint` | false | 차량 중심점 기준 체크 (빠름). 차폭 정밀 회피 필요 시 true 변경 |
+| `near_goal_distance` | 1.0 m | 목표 1 m 이내에서 CostCritic 비활성 → 목표 지점 진입 방해 방지 |
+
+**costmap 시각화:**
+
+* `/local_costmap/costmap` (`nav_msgs/OccupancyGrid`, 10 Hz) — costmap 격자 (RViz Map 디스플레이)
+* `/trajectories` (`visualization_msgs/MarkerArray`) — MPPI 후보 궤적 (`visualize: true`)
+* RViz에서 확인하려면 `Map` 디스플레이 추가 후 토픽을 `/local_costmap/costmap`으로 설정
 
 ---
 

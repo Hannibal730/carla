@@ -213,6 +213,7 @@ controller_server:
       critics:
         [
           "ConstraintCritic",   # 물리 제약 위반 패널티
+          "CostCritic",         # costmap 비용 기반 장애물 회피
           "GoalCritic",         # 목표 지점 접근 보상
           "GoalAngleCritic",    # 목표 지점 도달 시 heading 정렬
           "PathAlignCritic",    # 경로와 평행 주행 보상 (가장 중요)
@@ -299,12 +300,30 @@ controller_server:
         cost_power: 1
         threshold_to_consider: 0.5   # m: 이 거리 이상 목표가 있을 때만 활성화
 
+      # CostCritic
+      # 각 후보 궤적이 지나는 costmap 셀 비용을 합산해 장애물 근처 궤적에 패널티.
+      # lidar_2d obstacle_layer + inflation_layer 결과가 이 critic에 반영됨.
+      #
+      # collision_cost: 충돌(LETHAL_OBSTACLE) 셀 통과 궤적에 부여하는 큰 패널티.
+      #   매우 높게 설정해 충돌 궤적이 절대 선택되지 않도록 함.
+      # critical_cost: INSCRIBED_INFLATED_OBSTACLE(차량 중심이 장애물 외곽선 위) 패널티.
+      # consider_footprint: false → 차량 중심점 기준 체크 (footprint 체크보다 빠름).
+      #   차량 폭을 고려한 정밀 회피가 필요하면 true로 변경 (계산 비용 증가).
+      # near_goal_distance: 목표 지점 이 거리 이내에서는 CostCritic 비활성화.
+      #   목표 지점 근처에서 costmap 비용으로 인한 정지 방지.
+      CostCritic:
+        enabled: true
+        cost_weight: 3.81
+        cost_power: 1
+        consider_footprint: false
+        collision_cost: 1000000.0
+        critical_cost: 300.0
+        near_goal_distance: 1.0
+
 
 # =============================================================================
 # local_costmap
-# 차량 주변 장애물 격자 지도. MPPI가 궤적 비용 계산 시 이 costmap을 참조.
-# CostCritic 을 사용하지 않는 현재 설정에서는 장애물 회피 기능 없음.
-# 장애물 회피가 필요하면 critics 목록에 "CostCritic" 추가 필요.
+# 차량 주변 장애물 격자 지도. MPPI가 CostCritic을 통해 이 costmap을 참조해 장애물 회피.
 # =============================================================================
 local_costmap:
   local_costmap:

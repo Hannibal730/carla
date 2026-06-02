@@ -99,7 +99,7 @@ def _setup_sensors(world, vehicle, sensors_config, enable_native_ros=True):
                 location=carla.Location(
                     x=cx + float(sp.get("x", 0.0)),
                     y=cy - float(sp.get("y", 0.0)),
-                    z=cz + float(sp.get("z", 0.0))),
+                    z=float(sp.get("z", 0.0))),
                 rotation=carla.Rotation())
         else:
             wp = carla.Transform(
@@ -271,7 +271,7 @@ class PythonRos2Publisher:
                 sp = sensor_config.get("spawn_point", {})
                 transform.transform.translation.x = cx + float(sp.get("x", 0.0))
                 transform.transform.translation.y = -cy + float(sp.get("y", 0.0))
-                transform.transform.translation.z = cz + float(sp.get("z", 0.0))
+                transform.transform.translation.z = float(sp.get("z", 0.0))
             else:
                 transform.transform.translation.x = float(spawn_point.get("x", 0.0))
                 transform.transform.translation.y = float(spawn_point.get("y", 0.0))
@@ -300,17 +300,24 @@ class PythonRos2Publisher:
         cos_yaw = math.cos(yaw)
         sin_yaw = math.sin(yaw)
 
-        transforms = []
         wheel_names = ['fl', 'fr', 'rl', 'rr']
-        for wheel, name in zip(vehicle.get_physics_control().wheels, wheel_names):
+        positions = []
+        for wheel in vehicle.get_physics_control().wheels:
             dx = wheel.position.x / 100.0 - vx
             dy = wheel.position.y / 100.0 - vy
             dz = wheel.position.z / 100.0 - vz
-
-            # World displacement → vehicle-local CARLA frame (inverse yaw rotation)
             local_x = dx * cos_yaw + dy * sin_yaw
             local_y = -(- dx * sin_yaw + dy * cos_yaw)  # negate for CARLA→ROS Y
+            positions.append([local_x, local_y, dz])
 
+        # Rear track width in the CARLA physics model is incorrect for this vehicle.
+        # Override rear wheel Y to match front track (fl Y magnitude).
+        front_half_track = abs(positions[0][1])
+        positions[2][1] =  front_half_track  # rl: left  (+Y)
+        positions[3][1] = -front_half_track  # rr: right (-Y)
+
+        transforms = []
+        for (local_x, local_y, dz), name in zip(positions, wheel_names):
             t = self.TransformStamped()
             t.header.stamp = stamp
             t.header.frame_id = base_frame
@@ -362,7 +369,7 @@ class PythonRos2Publisher:
             return
 
         msg = self.Image()
-        msg.header.stamp = self._now()
+        msg.header.stamp = self._stamp_from_carla_time(image.timestamp)
         msg.header.frame_id = frame_id
         msg.height = image.height
         msg.width = image.width
@@ -372,15 +379,33 @@ class PythonRos2Publisher:
         msg.data = bytes(image.raw_data)
         self._publish(publisher, msg)
 
+    # lidar_2d 센서 좌표계 기준 차량 본체 박스 (단위: m)
+    _SELF_FILTER_BOX = (-2.5, 0.3, -0.8, 0.8)  # x_min, x_max, y_min, y_max
+
     def _publish_lidar(self, publisher, frame_id, lidar):
         if not self.active:
             return
 
+        # Parse as float32 [x, y, z, intensity] per point
+        pts = np.frombuffer(lidar.raw_data, dtype=np.float32).reshape(-1, 4).copy()
+
+        # CARLA +Y right → ROS +Y left
+        pts[:, 1] *= -1
+
+        # Remove ego-vehicle body returns for the 2-D lidar
+        if frame_id == "lidar_2d":
+            xn, xx, yn, yx = self._SELF_FILTER_BOX
+            in_box = (
+                (pts[:, 0] > xn) & (pts[:, 0] < xx) &
+                (pts[:, 1] > yn) & (pts[:, 1] < yx)
+            )
+            pts = pts[~in_box]
+
         msg = self.PointCloud2()
-        msg.header.stamp = self._now()
+        msg.header.stamp = self._stamp_from_carla_time(lidar.timestamp)
         msg.header.frame_id = frame_id
         msg.height = 1
-        msg.width = len(lidar.raw_data) // 16
+        msg.width = len(pts)
         msg.fields = [
             self.PointField(name="x", offset=0, datatype=self.PointField.FLOAT32, count=1),
             self.PointField(name="y", offset=4, datatype=self.PointField.FLOAT32, count=1),
@@ -391,12 +416,7 @@ class PythonRos2Publisher:
         msg.point_step = 16
         msg.row_step = msg.point_step * msg.width
         msg.is_dense = True
-
-        # Negate Y (CARLA +Y right → ROS +Y left): flip sign bit of each Y float32.
-        # Each point is 16 bytes [x:4][y:4][z:4][i:4]; Y sign bit is byte 7 (little-endian).
-        raw = np.frombuffer(lidar.raw_data, dtype=np.uint8).copy()
-        raw[7::16] ^= 0x80
-        msg.data = raw.tobytes()
+        msg.data = pts.tobytes()
 
         self._publish(publisher, msg)
 
