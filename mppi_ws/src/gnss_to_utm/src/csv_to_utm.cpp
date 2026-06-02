@@ -114,7 +114,7 @@ private:
         }
 
         nav_msgs::msg::Path path;
-        path.header.stamp = rclcpp::Time(0);  // Time(0) = use latest available TF (sim/wall clock mismatch 방지)
+        path.header.stamp = this->now();
         path.header.frame_id = "utm";
 
         const size_t n = local_pts.size();

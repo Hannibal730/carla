@@ -13,7 +13,7 @@ def generate_launch_description():
         executable='csv_to_utm',
         name='csv_to_utm',
         output='screen',
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': True}],
     )
 
     return LaunchDescription([csv_to_utm_node])
