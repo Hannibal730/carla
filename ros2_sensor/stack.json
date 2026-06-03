@@ -34,16 +34,16 @@
             "id": "lidar_2d",
             "spawn_point": {"x": 1.2, "y": 0.0, "z": 0.247, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "attributes": {
-                "range": 40,
+                "range": 20,
                 "channels": 1,
-                "points_per_second": 15000,
+                "points_per_second": 1000,
                 "rotation_frequency": 20,
                 "upper_fov": 0.0,
                 "lower_fov": 0.0,
-                "atmosphere_attenuation_rate": 0.004,
-                "dropoff_general_rate": 0.45,
-                "dropoff_intensity_limit": 0.8,
-                "dropoff_zero_intensity": 0.4
+                "atmosphere_attenuation_rate": 0.0,
+                "dropoff_general_rate": 0.0,
+                "dropoff_intensity_limit": 0.0,
+                "dropoff_zero_intensity": 0.0
             }
         },
         {
