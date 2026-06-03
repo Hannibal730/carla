@@ -27,6 +27,7 @@ setup(
             'path_visualizer = dual_filter.path_visualizer:main',
             'cmd_vel_to_carla = dual_filter.cmd_vel_to_carla:main',
             'follow_path_client = dual_filter.follow_path_client:main',
+            'mppi_speed_calc = dual_filter.mppi_speed_calc:main',
         ],
     },
 )
