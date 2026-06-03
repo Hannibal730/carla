@@ -938,18 +938,7 @@ FollowPath:
 
 ### 8.8 MPPI 주요 파라미터
 
-| 파라미터 | 의미 | 현재 시스템에서의 주의점 |
-| :--- | :--- | :--- |
-| `controller_frequency` | controller server loop 주파수 | `/odometry/local` publish rate보다 낮거나 같게 시작. 예: 30Hz |
-| `model_dt` | rollout time step | 코드상 `controller_period <= model_dt`이어야 함. 같게 두는 것을 권장 |
-| `time_steps` | rollout 길이 | `time_steps × model_dt`가 예측 horizon |
-| `batch_size` | 샘플 trajectory 수 | 클수록 품질↑, CPU 비용↑ |
-| `vx_max`, `vx_min` | 전후진 속도 제한 | CARLA 차량 속도와 안전 한계에 맞춤 |
-| `wz_max` | yaw rate 제한 | 실제 조향 한계와 맞춤 |
-| `ax_max`, `ax_min`, `az_max` | 가속/감속 및 yaw 가속 제한 | 너무 크면 명령이 거칠어짐 |
-| `vx_std`, `wz_std` | 샘플링 분산 | 조향 chatter가 있으면 `wz_std`를 줄여봄 |
-| `open_loop` | 현재 odometry 대신 이전 command 기반 예측 | 기본은 `false` 권장. odom latency가 심할 때만 검토 |
-| `critics` | trajectory 평가 항목 | path/goal/obstacle critic을 목적에 맞게 선택 |
+→ 파라미터 상세 설명 및 튜닝 가이드: [Section 10.5](#105-파라미터-상세-설명-및-튜닝-가이드)
 
 ### 8.9 출력 명령과 CARLA 제어 변환
 
@@ -1240,7 +1229,7 @@ ros2 run serial_bridge serial_bridge
 
 | 파라미터 | 값 | 설명 |
 | :--- | :--- | :--- |
-| `controller_frequency` | 20.0 Hz | local_ekf(50 Hz)보다 낮게. `model_dt = 1/20 = 0.05 s`와 일치시킬 것 |
+| `controller_frequency` | 10.0 Hz | local_ekf(50 Hz)보다 낮게. `model_dt = 1/10 = 0.1 s`와 반드시 일치시킬 것 |
 | `odom_topic` | `/odometry/local` | local EKF 출력(GNSS 미포함) 사용. GNSS 오차 도약에 면역 |
 | `costmap_update_timeout` | 0.30 s | sim time TF 지연 흡수 |
 | `failure_tolerance` | 1.5 s | 유효 cmd_vel 미생성 허용 시간 |
@@ -1248,333 +1237,7 @@ ros2 run serial_bridge serial_bridge
 | `goal_checker` | `SimpleGoalChecker` | 목표 0.5 m / 0.3 rad 이내 도달 시 성공 |
 | `PathHandler` | `FeasiblePathHandler` | 이미 지나친 waypoint prune_distance 5.0 m 이상이면 제거 |
 
-##### MPPI 플러그인 계층 (`FollowPath` 슬롯)
-
-###### 예측 수평선 및 샘플 (time_steps / model_dt / batch_size)
-
-| 파라미터 | 값 | 설명 |
-| :--- | :--- | :--- |
-| `time_steps` | 56 | 예측 구간 = 56 × 0.05 s = **2.8 s** / 14 m (vx=5 m/s 기준) |
-| `model_dt` | 0.05 s | `1 / controller_frequency` 와 반드시 일치 |
-| `batch_size` | 2000 | 동시 후보 궤적 수. CPU 환경 기준. GPU 가속 시 4096 이상 권장 |
-| `open_loop` | false | 닫힌루프: 각 time step 마다 실제 odometry 반영 |
-
-**`time_steps` 조정 지침**
-
-```text
-예측 구간 = time_steps × model_dt × vx_max
-           = 56 × 0.05 s × 5 m/s = 14 m
-
-* 너무 짧으면 (< 10 m): 급커브 진입 전에 미리 감속·회전을 준비하지 못해
-  경로를 벗어나거나 급조향 발생.
-* 너무 길면 (> 20 m): 계산량 비례 증가, 먼 미래 비용이 지나치게 영향을
-  미쳐 현재 제어가 흔들릴 수 있음.
-* 조정 공식: time_steps = (원하는 예측거리 m) / (model_dt × vx_max)
-  예) 예측 3 s, vx_max=5 m/s → time_steps = 3 / 0.05 = 60
-```
-
-**`batch_size` 와 계산 비용**
-
-```text
-총 연산 규모 ∝ batch_size × time_steps × controller_frequency
-            = 2000 × 56 × 20 = 2,240,000 회/s (롤아웃 스텝 합계)
-
-* CPU 기준 허용: 약 2,000~4,000 batch × 56 steps @ 20 Hz
-* 실시간 여부 확인: ros2 topic hz /cmd_vel → 20 Hz 근접 확인
-* GPU 가속 시: batch_size=8192까지 증가 가능 → 궤적 품질 대폭 향상
-```
-
----
-
-###### 가속도 및 속도 범위
-
-| 파라미터 | 값 | 역할 | 튜닝 지침 |
-| :--- | :--- | :--- | :--- |
-| `ax_max` | 2.0 m/s² | 최대 전방 가속도 | CARLA 차량 최대 가속 성능 이내로 설정 |
-| `ax_min` | -3.0 m/s² | 최대 제동 감속도 | 브레이크 성능 이내. 더 강한 제동이 필요하면 절댓값을 키움 |
-| `az_max` | 1.5 rad/s² | 최대 yaw 가속도 | 크면 급격한 조향 허용; 작으면 부드러운 조향 |
-| `vx_max` | 5.0 m/s | MPPI 궤적 최대 속도 | **반드시 낮은 값(2.0)에서 시작**, 안정 확인 후 단계적으로 증가 |
-| `vx_min` | -0.5 m/s | MPPI 궤적 최소 속도 | 소폭 후진 허용. 후진 불필요 시 0.0으로 변경 |
-| `wz_max` | 1.5 rad/s | 최대 yaw rate | `vx_max / min_turning_r`와 일치: 5.0/3.3 ≈ 1.5 |
-
-> **`vx_max` 와 `wz_max` 연동**: 두 값이 `min_turning_r` 를 통해 물리적으로 연결되어 있다.
-> `vx_max`를 높이면 `wz_max`도 함께 높여야 고속 커브에서 충분한 조향 yaw rate를 확보할 수 있다.
-> 반대로 `wz_max`가 너무 높으면 저속에서 급선회 궤적이 과도하게 생성된다.
-
----
-
-###### MPPI 알고리즘 핵심 파라미터 (temperature / vx_std / wz_std)
-
-| 파라미터 | 값 | 설명 |
-| :--- | :--- | :--- |
-| `vx_std` | 0.3 m/s | 속도 탐색 노이즈 크기 |
-| `wz_std` | 0.3 rad/s | 조향 탐색 노이즈 크기 |
-| `temperature` | 0.3 | softmax 가중치 날카로움 (MPPI의 λ) |
-| `gamma` | 0.015 | 미래 비용 discount factor |
-| `iteration_count` | 1 | 한 제어 주기 내 최적화 반복 수 |
-
-**`temperature` (λ) 상세**
-
-MPPI의 최종 제어 입력은 모든 후보 궤적의 가중 평균이다:
-
-```text
-U* = Σ w_k × U_k
-     where w_k = exp(-J_k / λ) / Σ exp(-J_j / λ)
-                 (J_k = k번째 궤적의 총 비용)
-
-* λ → 0 (temperature → 0): w_k가 최저 비용 궤적에만 집중
-    → 가장 공격적이고 최적에 가까운 제어. 소음에 민감, 급격한 조향 가능.
-* λ → ∞ (temperature → ∞): 모든 궤적이 동일 가중치
-    → 매우 보수적이고 부드러운 제어. 경로 이탈은 줄지만 반응 둔화.
-
-권장 초기값: 0.3 (도심 주행)
-  과도한 조향 진동 시: 0.1~0.2로 낮춤
-  너무 보수적(경로와 멀리 달림) 시: 0.5~1.0으로 높임
-```
-
-**`vx_std` / `wz_std` 조향 노이즈 상세**
-
-```text
-각 후보 궤적의 제어 입력:
-  U_k = U_nominal + ε_k,   ε_k ~ N(0, σ²)
-  여기서 σ = vx_std 또는 wz_std
-
-* vx_std 너무 크면: 속도 변동 과다 → 덜컹거리는 가속/감속
-* wz_std 너무 크면: 조향각 진동(oscillation) → 차량이 좌우로 흔들림
-* vx_std 너무 작으면: 속도 탐색 범위 좁음 → 구불구불한 경로에서 최적 속도 못 찾음
-* wz_std 너무 작으면: 조향 탐색 범위 좁음 → 급커브에서 경로 이탈
-
-진동 발생 시 조정 순서:
-  1. wz_std: 0.3 → 0.2 → 0.15 (조향 진동)
-  2. temperature: 0.3 → 0.2 (전체적인 흔들림)
-  3. PathAngleCritic.cost_weight: 2.0 → 1.0 (급커브 과잉 반응)
-```
-
-**`gamma` (discount factor)**
-
-```text
-총 비용: J = Σ_{t=0}^{T} γ^t × c_t
-          (c_t = t번째 스텝에서의 critic 비용 합)
-
-* γ = 0.015 → 현재값에 가까운 스텝이 미래 스텝보다 훨씬 중요
-  γ^56 ≈ 0.015^56 ≈ 거의 0 → 수평선 끝 비용 무시
-* 값을 높이면(0.1~0.5): 먼 미래까지 균등하게 고려 → 선견지명 증가, but 현재 반응 둔화
-```
-
-**`iteration_count`**
-
-```text
-1 제어 주기(1/20 s = 50 ms) 안에서 최적화를 반복할 횟수.
-* 1 (기본): 실시간 성능이 부족한 환경. 대부분의 경우 충분.
-* 2~3: 계산 여유가 있을 때. 더 나은 최적해 탐색.
-  하지만 iteration_count × 실행시간 > 1/freq 이면 deadline miss 발생.
-  ros2 topic hz /cmd_vel 로 발행 주기를 반드시 확인할 것.
-```
-
----
-
-###### 운동 모델 (ackermann)
-
-| 파라미터 | 값 | 역할 |
-| :--- | :--- | :--- |
-| `motion_model` | `ackermann` | 차량형 플랫폼 필수 |
-| `min_turning_r` | 3.3 m | MPPI 후보 궤적의 최소 회전반경 하한 |
-
-**`min_turning_r` 의 의미**
-
-```text
-ackermann 운동 모델의 조향 제약:
-  |wz| ≤ vx / min_turning_r
-
-이 값보다 급격한 회전 궤적은 AckermannMotionModel 내부에서 클리핑된다.
-
-값이 너무 작으면 (예: 1.0):
-  → 실제 차량이 불가능한 급선회 궤적도 "유효"로 평가
-  → MPPI가 이 궤적을 선택하면 실제 차량은 못 따라가 경로 이탈
-
-값이 너무 크면 (예: 10.0):
-  → 모든 커브 진입에서 크게 돌아가야 함 → 급커브 경로 이탈
-
-CARLA 실측 방법:
-  1) 차량 최대 조향각으로 원 주행 (manual_control.py)
-  2) ros2 topic echo /odometry/local 으로 x, y 기록
-  3) 원 반경 계산: r = sqrt((x-cx)² + (y-cy)²)
-  microlino 예상값: ~3.3 m
-```
-
----
-
-###### Critics 비용 함수 상세
-
-distance-from-goal 에 따른 critic 활성 여부
-
-```text
-목표까지 거리  │ 활성 Critic
-───────────────┼────────────────────────────────────
-항상           │ ConstraintCritic, PathAlignCritic,
-               │ PathFollowCritic
-0.5 m 이상     │ PreferForwardCritic, PathAngleCritic
-2.0 m 이내     │ GoalCritic         (활성화 시작)
-1.0 m 이내     │ GoalAngleCritic    (활성화 시작)
-───────────────┴────────────────────────────────────
-```
-
-| Critic | 가중치 | `offset_from_furthest` | 상세 역할 및 튜닝 |
-| :--- | :---: | :---: | :--- |
-| `PathAlignCritic` | **14.0** | 20 | 경로와 평행 주행. **가장 중요한 critic.** 값을 낮추면 경로 이탈 빈번해짐 |
-| `GoalCritic` | 5.0 | — | 예측 수평선 끝(time_steps번째 pose)이 목표 2.0 m 이내 시 활성. 값이 높을수록 목표에 빠르게 접근 |
-| `PathFollowCritic` | 5.0 | 5 | 어떤 샘플이든 가장 멀리 도달한 waypoint에서 5칸 뒤 점을 비용 목표로 사용. 값 크게 → 전진 압력 강함 / 값 작게 → 보수적 추종 |
-| `PreferForwardCritic` | 5.0 | — | 후진 궤적 패널티. 후진 불필요 환경에서는 10.0으로 높여 완전 억제 가능 |
-| `ConstraintCritic` | 4.0 | — | `vx_min~vx_max`, `wz_max` 범위 초과 궤적 패널티. 너무 낮으면 제약 위반 허용 |
-| `GoalAngleCritic` | 3.0 | — | 목표 1.0 m 이내에서 heading 정렬. 주차 정밀도가 낮아도 되면 0으로 비활성화 가능 |
-| `PathAngleCritic` | 2.0 | 4 | 커브 진입 전 heading 사전 정렬. 너무 높으면 직선 구간에서 불필요한 조향 유발 |
-
-###### `offset_from_furthest` 동작 원리
-
-매 0.05 s(20 Hz)마다 MPPI는 다음 세 단계로 작동한다.
-
-Step 1 — 2000개 trajectory 시뮬레이션
-
-```text
-경로(path):  ●─●─●─●─●─●─●─●─●─●─●─●─●─●─●
-             0  1  2  3  4  5  6  7  8  9  10 11 12 ...
-                      ↑
-                  현재 위치 (index 3)
-
-각 trajectory는 56 step × 0.05 s = 2.8 s 동안 시뮬레이션됨.
-차량 속도 5 m/s라면 각 trajectory는 약 14 m 앞까지 뻗어나감.
-```
-
-Step 2 — 각 trajectory의 경로 진행도 측정 → furthest 결정
-
-```text
-경로:  ●─●─●─●─●─●─●─●─●─●─●─●─●
-       0  1  2  3  4  5  6  7  8  9  10 11 12 ...
-                      ↑
-                  현재 위치
-
-trajectory A (잘 따라간 경우):    ~~~~~~~~~~~~~~~~~~~~→ index 11 도달
-trajectory B (약간 벗어난 경우):  ~~~~~~~~~~~~~~→ index 8 도달
-trajectory C (많이 벗어난 경우):  ~~~~~~~~→ index 5 도달
-...
-trajectory 2000 (최악):           ~~→ index 4 도달
-
-2000개 중 가장 멀리 도달한 것 = index 11
-                                       ↑
-                                  이것이 "furthest"
-```
-
-Step 3 — target 결정 및 비용 평가
-
-```text
-furthest = 11
-offset_from_furthest = 5  →  target = 11 - 5 = 6
-
-경로:  ●─●─●─●─●─●─●─●─●─●─●─●─●
-       0  1  2  3  4  5  6  7  8  9  10 11
-                      ↑         ↑          ↑
-                  현재위치   target     furthest
-
-2000개 trajectory를 "index 6에 얼마나 가까이 접근했는가"로 점수 매김.
-```
-
-왜 furthest 자체를 target으로 쓰지 않는가
-
-```text
-offset = 0  →  target = furthest = index 11
-
-  index 11에 도달하는 trajectory: 겨우 1~2개 (trajectory A만 거기까지 감)
-  나머지 1998개: 모두 index 11과 멀리 떨어져 있어 비용이 비슷하게 높음
-  → "어느 방향이 좋은지" 비용 차이가 거의 없음 (gradient 평탄)
-  → 최적화 방향을 못 찾음 → 제어 불안정
-
-offset = 5  →  target = index 6
-
-  index 6 근방에 도달하는 trajectory: 수백~수천 개
-  → "경로를 잘 따라간 것"과 "벗어난 것"의 비용 차이가 명확함
-  → 어느 방향으로 제어해야 할지 gradient가 뚜렷함 → 안정적인 최적화
-
-값이 너무 크면 (15↑):
-  target이 현재 위치 가까이 오므로 전진 압력이 약해져 차량이 정체됨.
-```
-
-###### 실제 lookahead 거리 계산
-
-```text
-lookahead 거리는 offset_from_furthest가 아니라
-MPPI의 시간 지평선(time_steps × model_dt)과 차량 속도가 결정한다.
-
-  lookahead ≈ time_steps × model_dt × current_vx
-             = 56 × 0.05 s × vx
-
-속도별 lookahead 거리:
-  vx = 2 m/s  →  56 × 0.05 × 2 = 5.6 m
-  vx = 5 m/s  →  56 × 0.05 × 5 = 14 m   (설계 기준)
-  vx = 8 m/s  →  56 × 0.05 × 8 = 22.4 m
-
-offset_from_furthest의 실거리 (10 cm 간격 경로 기준):
-  offset = 5  →  5 × 0.1 m = 0.5 m  (furthest에서 0.5 m 뒤)
-  offset = 8  →  8 × 0.1 m = 0.8 m
-  offset = 20 →  20 × 0.1 m = 2.0 m  (PathAlignCritic 기본값)
-
-즉, offset_from_furthest는 "얼마나 앞을 보는가"가 아니라
-"furthest 지점에서 얼마나 뒤를 비용 목표로 삼는가"다.
-lookahead를 늘리려면 time_steps 또는 vx_max를 올려야 한다.
-```
-
-###### `PathFollowCritic` ↔ `PathAlignCritic` 상호작용
-
-```text
-PathFollowCritic: "얼마나 빠르게 앞으로 나아갈 것인가"
-  offset이 작을수록 더 많은 샘플이 목표에 도달 → 안정적이나 전진 압력 약함
-  offset이 클수록 목표가 furthest 근처 → 전진 압력 강함, gradient 불안정 위험
-
-PathAlignCritic: "경로 선과 얼마나 평행하게 달릴 것인가"
-  offset_from_furthest=20 → furthest에서 2 m 뒤 방향과 정렬
-  가중치 14.0으로 가장 강함 → 다른 critic이 충돌하면 PathAlign이 우선
-
-조향 진동 원인 분석:
-  PathFollowCritic.offset_from_furthest 가 너무 높고
-  PathAngleCritic.cost_weight 가 너무 높으면 → 목표 방향 과잉 정렬
-  → PathAngleCritic 먼저 낮춤 (2.0 → 1.0)
-```
-
-##### local_costmap 계층
-
-| 파라미터 | 값 | 설명 |
-| :--- | :--- | :--- |
-| `global_frame` | `odom` | MPPI가 odom 프레임에서 롤아웃하므로 일치 필수 |
-| `width × height` | 20 m × 20 m | 예측 거리 14 m + 후방 여유. 0.1 m/cell = 200×200 격자 |
-| `obstacle_layer.topic` | `/carla/car/lidar_2d/point_cloud` | stack.json 의 1채널 2D LiDAR |
-| `obstacle_max_range` | 15.0 m | lidar_2d 정확도 신뢰 범위 |
-| `inflation_radius` | 1.5 m | 차폭 1.475 m / 2 + 안전 여유 0.76 m |
-
-**장애물 회피 파이프라인 (활성화 상태):**
-
-```text
-/carla/car/lidar_2d/point_cloud (PointCloud2, 1채널, 40 m, 20 Hz)
-        ↓ obstacle_layer (ObstacleLayer)
-  marking:  포인트 위치 → LETHAL_OBSTACLE(254)
-  clearing: 포인트 없는 방향 ray → FREE
-        ↓ inflation_layer (InflationLayer, radius 1.5 m)
-  장애물 주변 1.5 m 이내 셀 → 거리 비례 비용 (cost_scaling_factor 3.0)
-        ↓ CostCritic (10 Hz, odom 프레임, 20 m × 20 m rolling window)
-  각 후보 궤적의 통과 셀 비용 합산 → 장애물 근처 궤적 패널티
-```
-
-| CostCritic 파라미터 | 값 | 설명 |
-| :--- | :--- | :--- |
-| `cost_weight` | 3.81 | PathAlignCritic(14.0) 대비 낮게 → 경로 추종 우선, 회피 보조 |
-| `collision_cost` | 1000000.0 | LETHAL_OBSTACLE 셀 통과 시 사실상 해당 궤적 폐기 |
-| `critical_cost` | 300.0 | 차량 중심이 inflation 내곽 경계(INSCRIBED) 위일 때 강한 패널티 |
-| `consider_footprint` | false | 차량 중심점 기준 체크 (빠름). 차폭 정밀 회피 필요 시 true 변경 |
-| `near_goal_distance` | 1.0 m | 목표 1 m 이내에서 CostCritic 비활성 → 목표 지점 진입 방해 방지 |
-
-**costmap 시각화:**
-
-* `/local_costmap/costmap` (`nav_msgs/OccupancyGrid`, 10 Hz) — costmap 격자 (RViz Map 디스플레이)
-* `/trajectories` (`visualization_msgs/MarkerArray`) — MPPI 후보 궤적 (`visualize: true`)
-* RViz에서 확인하려면 `Map` 디스플레이 추가 후 토픽을 `/local_costmap/costmap`으로 설정
+> MPPI 플러그인·Critics·local_costmap 파라미터 상세: [Section 10.5](#105-파라미터-상세-설명-및-튜닝-가이드)
 
 ---
 
@@ -2537,7 +2200,43 @@ controller_server가 costmap 갱신을 이 시간 안에 받지 못하면 제어
 
 ---
 
+##### `prune_distance` (현재: 5.0 m) — PathHandler
+
+이미 지나친 waypoint를 경로에서 제거하는 기준 거리. 차량의 현재 위치보다 이 거리 이상 뒤에 있는 waypoint는 MPPI에 전달되는 로컬 경로에서 제거된다.
+
+**오실레이션 연결고리**: `prune_distance`가 너무 작으면 위치 추정 오차가 조금만 커져도 아직 지나지 않은 waypoint가 갑자기 pruning된다. 이 순간 경로 참조점이 불연속적으로 앞으로 점프 → PathAlignCritic·PathAngleCritic 비용 스파이크 → 급격한 조향 명령 → 오실레이션.
+
+| 방향 | 효과 | 주의사항 |
+| :--- | :--- | :--- |
+| **올리면** (예: 10 m) | 지나친 waypoint를 더 오래 유지 → 참조점 점프 완화 | 오래된 waypoint를 계속 참조하면 역방향으로 추종 시도 가능 |
+| **낮추면** (예: 2 m) | 빠른 waypoint 갱신 → 최신 경로 앞부분 참조 | 위치 노이즈에 민감 → 참조점 불연속 → 조향 진동 유발 |
+
+---
+
 #### 10.5.2 MPPI Core 파라미터 (FollowPath)
+
+---
+
+##### MPPI 샘플링 구조와 warm-start
+
+MPPI는 매 제어 주기마다 `batch_size`개의 후보 궤적을 병렬 생성한다. 각 후보의 제어 입력은 이전 주기 최적 해(warm-start)에 가우시안 노이즈를 더한 것이다:
+
+```text
+u_k[i] = u_optimal[i] + ε[i],   ε[i] ~ N(0, Σ),   Σ = diag(vx_std², wz_std²)
+
+u_optimal : 이전 주기 최적 제어 시퀀스 (warm-start)
+ε         : 가우시안 노이즈
+```
+
+**`vx_mean`이라는 별도 파라미터는 존재하지 않는다.** 샘플링 분포의 평균은 고정된 값이 아니라 이전 주기의 최적 해(warm-start)가 자동으로 담당한다:
+
+```text
+1주기: warm-start ≈ 0 m/s   → 샘플 N(0,   vx_std²) → 최적해 ≈ 0.4 m/s
+2주기: warm-start ≈ 0.4 m/s → 샘플 N(0.4, vx_std²) → 최적해 ≈ 0.7 m/s
+3주기: warm-start ≈ 0.7 m/s → 샘플 N(0.7, vx_std²) → ...
+```
+
+"얼마나 빠른 궤적을 탐색하는가"는 `vx_std`가 결정하고, "얼마나 빠른 궤적을 선택하는가"는 Critic 가중치들이 결정한다.
 
 ---
 
@@ -2559,11 +2258,59 @@ controller_server가 costmap 갱신을 이 시간 안에 받지 못하면 제어
 
 ---
 
-##### `batch_size` (현재: 500)
+##### 속도 상향 시 연동 확인 — 예측 거리·제동 거리·costmap
+
+예측 수평선은 **시간** 단위다. `time_steps × model_dt = 4.0 s`는 속도와 무관하게 고정된다. 그러나 물리적 예측 거리(`vx × 4.0 s`)는 속도에 비례해 자동으로 늘어난다.
+
+```text
+예측 거리 = vx × time_steps × model_dt
+
+vx = 1 m/s →  1 × 40 × 0.1 =  4 m
+vx = 3 m/s →  3 × 40 × 0.1 = 12 m
+vx = 5 m/s →  5 × 40 × 0.1 = 20 m  (현재 설정)
+vx = 8 m/s →  8 × 40 × 0.1 = 32 m
+```
+
+→ **`time_steps` 자체를 올릴 필요는 없는 경우가 많다.** 단, 아래 두 조건을 반드시 확인해야 한다.
+
+###### 조건 1 — 제동 거리 < 예측 거리
+
+```text
+제동 거리 = vx² / (2 × |ax_min|) = vx² / 6.0   (ax_min = −3.0 m/s² 기준)
+
+vx = 5 m/s →  25 / 6 =  4.2 m  (예측 거리 20 m의 21%)  ✓
+vx = 8 m/s →  64 / 6 = 10.7 m  (예측 거리 32 m의 33%)  ✓
+vx = 10 m/s → 100 / 6 = 16.7 m  (예측 거리 40 m의 42%)  ✓
+```
+
+현재 `ax_min = -3.0 m/s²` 설정에서는 `vx_max`를 10 m/s까지 올려도 제동 거리 < 예측 거리 조건을 만족한다. 만약 `ax_min`을 완만하게 (예: -1.0 m/s²) 설정하면 `vx=5`에서도 제동 거리가 12.5 m로 커져 `time_steps` 증가가 필요해진다.
+
+###### 조건 2 — costmap 반경 ≥ 예측 거리의 절반
+
+CostCritic은 로컬 costmap 범위 내의 장애물만 평가한다. 현재 costmap은 20 m × 20 m → 차량 전방 최대 **10 m**까지만 장애물 인식 가능하다.
+
+```text
+vx = 5 m/s → 예측 거리 20 m → costmap 전방 10 m 커버 → 10~20 m 구간 장애물 미인식  ⚠️
+vx = 8 m/s → 예측 거리 32 m → costmap 전방 10 m 커버 → 10~32 m 구간 장애물 미인식  ✗
+```
+
+`vx_max`를 올릴 때는 **costmap `width`/`height`를 함께 키워야** 전방 장애물 인식 범위가 예측 거리를 따라간다.
+
+| `vx_max` | 필요 costmap 크기 (전방 커버 기준) | `raytrace_max_range` 권장값 |
+| :--- | :--- | :--- |
+| 5 m/s | 20 m × 20 m (현재 — 한계) | 18 m |
+| 8 m/s | 30 m × 30 m | 25 m |
+| 10 m/s | 40 m × 40 m | 35 m |
+
+> costmap 크기를 키우면 격자 수가 면적에 비례해 증가(2배 크기 → 4배 격자)하므로 CPU 부하를 반드시 확인한다.
+
+---
+
+##### `batch_size` (현재: 1000)
 
 MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
-**물리적 의미**: 500개의 서로 다른 노이즈 시퀀스를 생성하고 각각의 비용을 계산해 weighted average로 최적 제어를 구한다. 많을수록 최적 궤적에 가까운 해를 찾지만 연산 시간이 선형으로 늘어난다.
+**물리적 의미**: `batch_size`개(현재 1000)의 서로 다른 노이즈 시퀀스를 생성하고 각각의 비용을 계산해 weighted average로 최적 제어를 구한다. 많을수록 최적 궤적에 가까운 해를 찾지만 연산 시간이 선형으로 늘어난다.
 
 | 방향 | 효과 | 주의사항 |
 | :--- | :--- | :--- |
@@ -2597,22 +2344,22 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `vx_std` (현재: 0.7 m/s) ← **속도 탐색의 핵심**
+##### `vx_std` (현재: 0.3 m/s) ← **속도 탐색의 핵심**
 
 각 후보 궤적의 속도 제어 입력에 추가하는 가우시안 노이즈의 표준편차.
 
-**물리적 의미**: 이전 최적 속도(nominal) 주변 ±`vx_std` 범위에서 새 속도 궤적을 샘플링한다. MPPI가 처음 수렴하면 nominal ≈ `vx_min`에 가까운 저속이 될 수 있는데, 이 상태에서 `vx_std`가 작으면 영원히 저속에 갇힌다.
+**물리적 의미**: warm-start 값 주변 ±`vx_std` 범위에서 새 속도 궤적을 샘플링한다. MPPI가 처음 수렴하면 warm-start ≈ 저속이 될 수 있는데, 이 상태에서 `vx_std`가 작으면 고속 궤적을 탐색하지 못해 저속에 갇힌다.
 
 | 방향 | 효과 | 주의사항 |
 | :--- | :--- | :--- |
 | **올리면** (예: 1.0) | 더 넓은 속도 범위 탐색 → 저속 고착 탈출 가능; MPPI가 0~`vx_max` 전체를 탐색 | 속도 불안정 증가 (급가속·급감속 궤적 혼재) |
 | **낮추면** (예: 0.3) | 현재 속도 근처만 탐색 → 안정적이지만 고속 도달 불가; 0.7 m/s 고착 문제의 원인 | 경로 앞에 고속 구간이 있어도 탐색 불가 |
 
-> **이전 문제**: `vx_std: 0.3`일 때 nominal ~0.7 m/s ± 0.3 = 0.4~1.0 m/s만 탐색. PathFollowCritic 보상이 고속 궤적에서 더 크더라도 탐색 공간 밖이라 수렴 불가 → 0.7로 증가해 해결.
+> **현재 문제**: `vx_std: 0.3`이면 warm-start ~0.7 m/s ± 0.3 = 0.4~1.0 m/s만 탐색. PathFollowCritic 보상이 고속 궤적에서 더 크더라도 탐색 공간 밖이라 수렴 불가 → 0.5로 먼저 올려 테스트 권장.
 
 ---
 
-##### `wz_std` (현재: 0.15 rad/s) ← **조향 진동의 핵심**
+##### `wz_std` (현재: 0.3 rad/s) ← **조향 진동의 핵심**
 
 각 후보 궤적의 yaw rate 제어 입력에 추가하는 가우시안 노이즈의 표준편차.
 
@@ -2622,10 +2369,10 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 | 방향 | 효과 | 주의사항 |
 | :--- | :--- | :--- |
-| **올리면** (예: 0.3) | 더 공격적인 조향 탐색 → 급커브 통과 능력 향상 | 고속에서 S자 오실레이션 발생; 직선 경로에서도 좌우 흔들림 |
-| **낮추면** (예: 0.1) | 조향 노이즈 최소화 → 직선·완만한 커브에서 매우 안정적 | 급커브 탐색 불충분 → 좁은 코너에서 경로 이탈 가능 |
+| **올리면** (예: 0.4) | 더 공격적인 조향 탐색 → 급커브 통과 능력 향상 | 고속에서 S자 오실레이션 발생; 직선 경로에서도 좌우 흔들림 |
+| **낮추면** (예: 0.15) | 조향 노이즈 최소화 → 직선·완만한 커브에서 매우 안정적 | 급커브 탐색 불충분 → 좁은 코너에서 경로 이탈 가능 |
 
-> **튜닝 기준**: 직선 경로에서 오실레이션 발생 → `wz_std` 낮춤 (0.15 → 0.1). 커브에서 경로 이탈 → `wz_std` 높임 (0.15 → 0.2). 고속(5 m/s)에서는 0.1~0.15가 안전권.
+> **튜닝 기준**: 직선 경로에서 오실레이션 발생 → `wz_std` 낮춤 (0.3 → 0.2 → 0.15). 커브에서 경로 이탈 → `wz_std` 높임 (0.3 → 0.4). 고속(5 m/s)에서는 0.15~0.2가 안전권.
 
 ---
 
@@ -2669,7 +2416,7 @@ MPPI softmax 가중치의 날카로움(sharpness)을 조절한다. MPPI 알고�
 | **낮추면** (예: 0.1) | 극도로 greedy → 최저 비용 궤적 독점 선택; 직선 구간에서 매우 안정적 | 탐색 부족; 지역 최적에 고착될 수 있음 |
 | **올리면** (예: 0.7) | 여러 궤적이 골고루 가중치 → 부드러운 blending; 다양한 조건에 유연 | 고속에서 좌/우 오실레이션 궤적도 가중치를 얻어 S자 발생 |
 
-> **현재 설정 이유**: `vx_std=0.7`로 고속 탐색이 충분히 이뤄지므로 `temperature=0.3`의 greedy 선택이 "직진 고속" 궤적을 독점 선택한다. `temperature=0.5`였을 때는 좌/우 조향 궤적도 가중치를 받아 S자가 발생했다.
+> **오실레이션 관점**: 직선 구간에서 S자 진동이 발생하면 `temperature`를 낮춘다(0.3 → 0.1). 낮아질수록 최저 비용 궤적 하나에 집중해 좌/우 궤적이 가중치를 얻지 못한다. 반대로 좁은 구간에서 MPPI가 경직되어 경로 이탈이 잦아지면 0.5 방향으로 올려 탐색 유연성을 높인다.
 
 ---
 
@@ -2684,7 +2431,7 @@ MPPI softmax 가중치의 날카로움(sharpness)을 조절한다. MPPI 알고�
 
 ---
 
-##### `regenerate_noises` (현재: false)
+##### `regenerate_noises` (현재: true)
 
 | 값 | 효과 |
 | :--- | :--- |
@@ -2708,13 +2455,38 @@ Ackermann 운동 모델에서 MPPI 샘플 궤적의 곡률 상한을 결정한�
 
 ---
 
+##### `collision_lookahead_time` (현재: 2.0 s) — TrajectoryValidator
+
+파일: `nav2_carla_params.yaml` → `FollowPath.TrajectoryValidator`
+
+MPPI가 후보 궤적을 최종 선택하기 전에, 이 시간 안에 충돌이 예측되는 궤적을 폐기하는 2차 필터. CostCritic의 비용 기반 평가와 달리 **시간 기준 이진 필터(통과/폐기)**다.
+
+```text
+현재: collision_lookahead_time = 2.0 s
+
+vx = 2 m/s → 검사 거리 = 2.0 × 2 =  4 m
+vx = 5 m/s → 검사 거리 = 2.0 × 5 = 10 m  ← costmap 반경과 같음
+vx = 8 m/s → 검사 거리 = 2.0 × 8 = 16 m  ← costmap 반경(10 m) 초과
+```
+
+속도가 높아질수록 검사 거리가 자동으로 늘어난다. 단, costmap 범위(현재 전방 10 m)를 벗어난 검사는 실제로 장애물 정보가 없으므로 의미가 없다.
+
+| 방향 | 효과 | 주의사항 |
+| :--- | :--- | :--- |
+| **올리면** (예: 3.0 s) | 더 먼 미래의 충돌 예측 궤적 조기 폐기 → 고속에서 더 안전 | costmap 범위 내에서만 실효성 있음; costmap 범위 초과 시 효과 없음 |
+| **낮추면** (예: 1.0 s) | 가까운 충돌만 필터링 → 더 많은 궤적 생존 → MPPI 탐색 공간 넓어짐 | 고속에서 먼 장애물 대응 능력 저하 |
+
+> `collision_lookahead_time`을 늘리는 것보다 **costmap을 키우는 것**이 우선이다. costmap이 좁으면 이 시간을 아무리 늘려도 장애물 데이터가 없어 효과가 없다.
+
+---
+
 #### 10.5.3 Critic 파라미터
 
 Critics는 각 후보 궤적에 비용을 부여하는 함수다. **`cost_weight`가 높을수록 해당 기준이 최적 궤적 선택에 강하게 반영**된다. 합산 비용이 가장 낮은 궤적이 cmd_vel로 출력된다.
 
 ---
 
-##### PathAlignCritic (현재 weight: 12.0) ← **가장 중요한 Critic**
+##### PathAlignCritic (현재 weight: 14.0) ← **가장 중요한 Critic**
 
 궤적이 전체 경로와 **평행**하게 달릴수록 낮은 비용을 부여한다.
 
@@ -2725,7 +2497,7 @@ Critics는 각 후보 궤적에 비용을 부여하는 함수다. **`cost_weight
 | **올리면** (예: 16) | 경로 이탈에 강한 패널티 → 경로 추종 정밀도 향상 | 경로 이탈을 피하기 위해 속도를 낮추는 경향 발생; 장애물 회피 유연성 감소 |
 | **낮추면** (예: 8) | 경로 약간 이탈 허용 → 고속 주행 시 자연스러운 라인 선택 | 경로 이탈이 크면 다른 Critic이 보상을 줘도 경로 복귀 못함 |
 
-###### `offset_from_furthest` (현재: 10)
+###### `offset_from_furthest` (현재: 20)
 
 예측 구간 내에서 도달 가능한 가장 먼 waypoint에서 이 숫자만큼 앞 waypoint를 경로 정렬 기준점으로 설정한다.
 
@@ -2734,20 +2506,51 @@ Critics는 각 후보 궤적에 비용을 부여하는 함수다. **`cost_weight
 | **올리면** (예: 20) | 더 먼 앞 waypoint를 기준 → 커브 사전 감지; 하지만 먼 기준점은 차량 현재 위치와 방향이 달라 기준점 방향 흔들림 유발 → 조향 진동 원인 |
 | **낮추면** (예: 5) | 현재 위치 가까운 waypoint 기준 → 방향 안정; 너무 낮으면 이미 지나친 waypoint를 기준삼아 U턴 시도 |
 
-###### `use_path_orientations` (현재: true)
+**속도 × waypoint 간격 연동**: `offset_from_furthest`는 waypoint **인덱스** 단위다. 물리적 기준점 거리는 `offset × waypoint_spacing`이므로, 속도가 오르거나 waypoint 간격이 달라지면 같은 `offset_from_furthest` 값이라도 물리적 기준점 위치가 달라진다.
+
+```text
+waypoint 간격 d = 0.5 m, vx = 5 m/s 기준:
+  4초 동안 40개 waypoint 도달
+  furthest = 40번째, offset=20 → 기준점 = 20번째 = 10 m 앞  (적절)
+
+vx = 8 m/s 로 올리면:
+  4초 동안 64개 waypoint 도달
+  furthest = 64번째, offset=20 → 기준점 = 44번째 = 22 m 앞  (너무 멀어 진동 유발)
+  → offset_from_furthest를 30~35로 올려 기준점을 다시 10~15 m 근처로 조정 필요
+```
+
+###### `use_path_orientations` (현재: false)
 
 | 값 | 효과 |
 | :--- | :--- |
 | `true` | 횡거리 이탈 + **heading 이탈** 동시 패널티 → S자 궤적(경로 근처지만 방향이 틀린 궤적)을 직접 억제 |
 | `false` | 횡거리 이탈만 패널티 → S자 궤적도 경로 근처에 있으면 낮은 비용 → 오실레이션 발생 가능 |
 
+###### `trajectory_point_step` (현재: 4)
+
+PathAlignCritic이 궤적 비용을 계산할 때 `time_steps` 중 몇 번째 포인트마다 평가할지 결정한다.
+
+현재 설정 기준:
+
+```text
+time_steps = 40, trajectory_point_step = 4
+→ 4스텝마다 1회 평가 → 총 10개 포인트만 평가
+→ 각 평가 간격 = 4 × 0.1 s = 0.4 s
+→ 0.4 s 내에서 발생하는 미세 조향 진동은 비용 계산에 포함되지 않음
+```
+
+| 방향 | 효과 | 주의사항 |
+| :--- | :--- | :--- |
+| **낮추면** (예: 2) | 더 세밀한 평가 → 단기 진동 궤적도 높은 비용 부여 → 오실레이션 억제 | 계산량 증가 (step=2이면 평가 횟수 2배) |
+| **올리면** (예: 6) | 계산 절약 | 평가 간격 0.6 s → 더 큰 단기 진동 허용 |
+
 ---
 
-##### PathFollowCritic (현재 weight: 8.0)
+##### PathFollowCritic (현재 weight: 5.0)
 
 경로상 현재 위치 앞의 waypoint를 향해 이동할수록 낮은 비용을 부여한다. 이 Critic이 속도를 간접적으로 결정한다.
 
-###### `cost_weight` (현재: 8.0)
+###### `cost_weight` (현재: 5.0)
 
 | 방향 | 효과 |
 | :--- | :--- |
@@ -2760,6 +2563,8 @@ Critics는 각 후보 궤적에 비용을 부여하는 함수다. **`cost_weight
 | :--- | :--- |
 | **올리면** (예: 8~10) | 더 먼 waypoint를 추적 목표로 설정 → 빠른 진행; 고속 + 긴 직선에 적합 |
 | **낮추면** (예: 2~3) | 더 가까운 waypoint 추적 → 느리지만 정밀; 좁은 코너·저속 환경에 적합 |
+
+PathAlignCritic의 `offset_from_furthest`와 마찬가지로, 속도 상향 시 같은 인덱스 값이 더 먼 물리적 거리를 가리키게 된다. 고속(8 m/s 이상)에서는 값을 함께 올려 유효 추적 거리가 너무 멀어지지 않도록 한다.
 
 ---
 
@@ -2777,6 +2582,15 @@ Critics는 각 후보 궤적에 비용을 부여하는 함수다. **`cost_weight
 ###### `max_angle_to_furthest` (현재: 1.2 rad ≈ 69°)
 
 경로 방향과 현재 heading의 차이가 이 각도를 초과하면 PathAngleCritic 비활성화. 이미 크게 틀어진 상황에서 heading 정렬 페널티가 경로 복귀를 방해하지 않도록 한다.
+
+###### `forward_preference` (현재: true)
+
+PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부.
+
+| 값 | 효과 | 주의사항 |
+| :--- | :--- | :--- |
+| `true` | 경로 heading과 차량 heading의 차이를 전진 방향 기준으로만 계산 → 후진 방향 heading은 높은 비용 | 경로 추종 환경(전진만 필요)에서 올바른 설정 |
+| `false` | 전진·후진 heading 모두 허용 → 후진 경로에서 역방향 heading도 낮은 비용 | 전진 전용 경로에서 false로 설정 시, 후진 방향 heading이 우연히 낮은 비용을 얻어 갑작스러운 역방향 조향 명령 → 오실레이션 유발 가능 |
 
 ---
 
@@ -2863,13 +2677,40 @@ LiDAR 발행 주파수(20 Hz)의 절반으로 설정. `controller_frequency`와 
 
 ##### `width` × `height` / `resolution` (현재: 20 m × 20 m / 0.1 m)
 
-- 예측 거리(20 m) 기준으로 전방·후방 여유를 포함한 크기. `vx_max` 상향 시 함께 키울 것.
 - 0.1 m/cell: lidar_2d 포인트 간격(≈0.05 m)의 2배로 충분한 해상도.
+
+**`vx_max`와 연동 — CostCritic 장애물 인식 범위**
+
+CostCritic이 평가할 수 있는 장애물의 최대 전방 거리는 `width / 2`(rolling window 기준 차량 전방)다. `vx_max`를 올릴수록 MPPI의 예측 거리가 늘어나지만 costmap이 그만큼 커지지 않으면 전방 구간에 장애물이 있어도 인식하지 못한다.
+
+```text
+현재: width=20 m → CostCritic 전방 최대 인식 = 10 m
+예측 거리(vx=5) = 20 m → 10~20 m 구간 장애물은 CostCritic에 미인식
+
+vx_max를 8 m/s로 올리면:
+예측 거리 = 32 m, costmap 전방 10 m → 10~32 m 구간 전체 미인식
+→ costmap을 30 m × 30 m 이상으로 확대해야 함
+```
+
+| `vx_max` | 예측 거리 | 권장 costmap 크기 | 격자 수 (0.1 m/cell) |
+| :--- | :--- | :--- | :--- |
+| 5 m/s | 20 m | 20 m × 20 m | 200 × 200 = 40,000 |
+| 8 m/s | 32 m | 30 m × 30 m | 300 × 300 = 90,000 (+125%) |
+| 10 m/s | 40 m | 40 m × 40 m | 400 × 400 = 160,000 (+300%) |
+
+costmap 크기를 2배로 키우면 격자 수는 4배로 늘어난다. OpenMP 빌드 없이 40×40 costmap을 10 Hz로 갱신하면 CPU 부하가 임계치를 넘을 수 있으므로 [Section 10.4.7](#1047-nav2_mppi_controller-openmp-빌드-연산-과다-근본-해결)을 먼저 적용한다.
+
+함께 조정이 필요한 파라미터:
+
+| 파라미터 | 현재값 | 설명 |
+| :--- | :--- | :--- |
+| `raytrace_max_range` | 18.0 m | LiDAR 레이캐스팅 최대 거리. costmap 절반 크기와 맞춤 |
+| `obstacle_max_range` | 15.0 m | 장애물 마킹 최대 거리. `raytrace_max_range`보다 작게 유지 |
 
 | 방향 | 효과 | 주의사항 |
 | :--- | :--- | :--- |
-| 크기 **키우면** | 더 먼 장애물 인식; 고속 환경에 적합 | 격자 수 증가 → costmap 연산 비용 증가 |
-| 해상도 **높이면** (예: 0.05 m) | 장애물 위치 정밀도 향상 | 격자 수 4배 증가 → 큰 부하 |
+| 크기 **키우면** | 고속 예측 거리만큼 장애물 인식 확보 | 격자 수 제곱 증가 → CPU 부하 급증 |
+| 해상도 **높이면** (예: 0.05 m) | 장애물 위치 정밀도 향상 | 격자 수 4배 증가 → 부하 매우 큼 |
 
 ---
 
@@ -2912,6 +2753,332 @@ LiDAR 발행 주파수(20 Hz)의 절반으로 설정. `controller_frequency`와 
 2. **직선 안정성 (오실레이션 없음)**: `wz_std: 0.15`로 조향 노이즈 억제, `temperature: 0.3`으로 greedy 선택, `use_path_orientations: true`로 heading 이탈 직접 패널티
 3. **연산 실시간성**: `controller_frequency: 10 Hz`, `batch_size: 500`으로 100 ms 예산 내 수렴
 
-**속도가 다시 느려지면**: `PathFollowCritic weight: 8 → 10` 또는 `vx_std: 0.7 → 1.0`  
-**오실레이션이 재발하면**: `wz_std: 0.15 → 0.10` 또는 `temperature: 0.3 → 0.2`  
-**커브에서 이탈하면**: `wz_std: 0.15 → 0.2` 또는 `PathAngleCritic weight: 2.0 → 3.0`
+**속도가 다시 느려지면**: `PathFollowCritic weight: 5 → 8` 또는 `vx_std: 0.3 → 0.5`  
+**오실레이션이 재발하면**: `wz_std` 낮춤 또는 `temperature: 0.3 → 0.2`  
+**커브에서 이탈하면**: `wz_std` 높임 또는 `PathAngleCritic weight: 2.0 → 3.0`
+
+---
+
+**속도 저하 시 권장 튜닝 순서:**
+
+| 단계 | 파라미터 | 현재값 | 권장값 | 목적 |
+| :--- | :--- | :---: | :---: | :--- |
+| 1 | `vx_std` | 0.3 m/s | 0.5 m/s | 탐색 폭 확대 (저속 고착 탈출) |
+| 2 | `PathFollowCritic.cost_weight` | 5.0 | 8.0 | 전진 인센티브 강화 |
+| 3 | `PathFollowCritic.offset_from_furthest` | 5 | 7 | 더 먼 waypoint 추적 |
+| 4 | `_KP_SPEED` | 0.8 | 1.2 | 스로틀 추종 속도 향상 |
+
+> 각 단계 후 `ros2 topic hz /cmd_vel`과 `/odometry/local` 속도를 반드시 확인하고 안정적일 때만 다음 단계로 진행한다.
+
+---
+
+#### 10.5.6 `_KP_SPEED` — 스로틀 비례 제어 게인
+
+파일: `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` (모듈 상수, 현재값: 0.8)
+
+MPPI가 `target_vx`를 출력하면 현재 CARLA 차량 속도와의 오차에 게인을 곱해 스로틀을 결정한다:
+
+```python
+err = target_vx - current_vx
+if err > 0.0:
+    throttle = min(_KP_SPEED * err, 1.0)
+    brake = 0.0
+else:
+    throttle = 0.0
+    brake = min(-_KP_SPEED * err, 1.0)
+```
+
+**P 제어기의 구조적 한계 (정상 상태 오차):**
+
+```text
+차량 등속 유지에 필요한 스로틀 = T_steady (마찰·공기 저항 보상)
+
+err → 0 이면 throttle → 0  →  T_steady 공급 불가
+→ 실제 속도는 target_vx보다 항상 약간 낮게 수렴
+
+예: target_vx = 0.7 m/s, current_vx = 0.5 m/s
+    throttle = 0.8 × 0.2 = 0.16  (매우 약한 가속 → 속도 정체)
+
+    target_vx = 2.0 m/s, current_vx = 0.3 m/s
+    throttle = 0.8 × 1.7 = 1.36 → 클리핑 → 1.0  (풀 스로틀, 문제 없음)
+```
+
+저속 크리핑 구간(err가 작을 때)에서 스로틀이 약해 속도 정체가 발생한다.  
+`vx_std`를 올려 MPPI가 높은 속도를 명령하면 err가 커져 이 문제가 자연스럽게 해소된다.
+
+| 방향 | 효과 | 주의사항 |
+| :--- | :--- | :--- |
+| **올리면** (예: 1.2) | 오차 추종 빨라짐 → 속도 지연 감소 | 너무 크면 오버슈트 → 속도 헌팅(진동) 발생 |
+| **낮추면** (예: 0.5) | 부드러운 가속 | 목표 속도 도달 느려짐 |
+
+> CARLA 시뮬레이션 수준에서는 1.2~1.5가 안정적인 상한이다. 정상 상태 오차를 완전히 제거하려면 적분 항을 추가한 PID 제어기가 필요하다.
+
+---
+
+##### `--wheelbase` (현재: 1.47 m) — 조향각 계산 오차
+
+조향각 계산식: `δ = atan2(-wz × L, vx)` (자전거 모델 역변환, L = wheelbase)
+
+L이 실제 차량 축간거리와 다르면 MPPI가 명령한 `wz`와 실제 차량의 조향각이 불일치한다:
+
+```text
+실제 L = 1.47 m, 설정 L = 1.20 m (과소 설정):
+  wz = 0.5 rad/s, vx = 2.0 m/s
+  → δ_설정 = atan2(-0.5 × 1.20, 2.0) = atan2(-0.6, 2.0) = -0.29 rad  (실제보다 작은 조향)
+  → 실제 곡률 부족 → 경로 외측 이탈 → PathAlignCritic 비용 증가
+  → 다음 주기 더 큰 wz 명령 → 오버슈트 → 오실레이션
+
+실제 L = 1.47 m, 설정 L = 2.00 m (과대 설정):
+  → δ_설정 이 실제보다 큰 조향각 → 과도한 선회 → 반대편 이탈 → 오실레이션
+```
+
+**측정 방법**: CARLA `physics_control.wheels`의 `position` 필드로 전·후륜 좌표 차이를 직접 계산하거나, 직선 주행 후 `ros2 topic echo /carla/<vehicle>/wheel_info`에서 확인.
+
+| 오차 방향 | 증상 |
+| :--- | :--- |
+| L **과소** 설정 | 직선 경로에서 지속적으로 외측 이탈 → 복귀 시도 → 蛇行 |
+| L **과대** 설정 | 커브에서 과도한 선회 후 반대편 이탈 → 큰 진폭 오실레이션 |
+
+---
+
+##### steer 출력 필터링 부재 — 오실레이션 직접 전달 경로
+
+`cmd_vel_to_carla.py`는 MPPI의 `wz`를 `δ = atan2(-wz × L, vx)`로 변환한 뒤 **필터링 없이 즉시 CARLA `steer`로 적용**한다. MPPI가 매 제어 주기(100 ms)마다 `wz`를 출력할 때 주기 간 진동이 있으면 이 진동이 조향 액추에이터에 그대로 전달된다:
+
+```text
+MPPI 출력 wz 시계열:  +0.3 → -0.3 → +0.3 → -0.3  (100 ms 간격)
+→ steer 시계열:        +X°  → -X°  → +X°  → -X°   (100 ms 간격)
+→ 차량이 좌우로 흔들리는 물리적 오실레이션 발생
+```
+
+현재 코드에는 steer 출력에 대한 스무딩이 **없다**. 지수 이동 평균(EMA) 필터를 추가하면 MPPI 수준의 진동을 물리 조향으로 전달되기 전에 감쇠할 수 있다:
+
+```python
+# cmd_vel_to_carla.py 에 추가할 수 있는 EMA 필터 (현재 미구현)
+_EMA_ALPHA = 0.5   # 0 에 가까울수록 강한 필터; 1이면 필터 없음
+
+# __init__ 에서: self._smooth_steer = 0.0
+# _cmd_vel_cb 에서 steer 계산 후:
+self._smooth_steer = _EMA_ALPHA * steer + (1 - _EMA_ALPHA) * self._smooth_steer
+ctrl.steer = float(self._smooth_steer)
+```
+
+| `_EMA_ALPHA` | 효과 | 주의사항 |
+| :--- | :--- | :--- |
+| 0.3 | 강한 스무딩 → 진동 크게 감쇠 | 조향 응답이 느려져 급커브 진입 지연 |
+| 0.5 | 중간 스무딩 → 1 스텝 지연으로 진폭 절반 | 커브 추종 능력과 안정성 절충 |
+| 0.7 | 약한 스무딩 | MPPI 진동이 일부 통과 |
+| 1.0 | 필터 없음 (현재 상태) | MPPI 진동 100% 전달 |
+
+> `wz_std` 감소·`temperature` 감소로도 MPPI 수준의 진동을 줄일 수 있지만, EMA 필터는 물리 레벨의 마지막 방어선이다. MPPI 파라미터 튜닝 후에도 미세한 물리 진동이 남는다면 `_EMA_ALPHA = 0.5` 적용을 권장한다.
+
+---
+
+## 11. TF 시간적 허용 오차 (TF Temporal Tolerance)
+
+### 11.1 개념
+
+ROS 2의 TF 시스템(`tf2_ros::Buffer`)은 노드가 발행한 좌표 변환(TF)을 타임스탬프 순으로 **링 버퍼**에 저장한다. 어떤 노드가 `lookupTransform(target_frame, source_frame, t)` 를 호출하면, tf2는 버퍼 안에서 요청 시각 `t` 에 가장 가까운 두 TF를 찾아 선형 보간한다.
+
+**문제가 발생하는 경우:**
+
+```text
+현재 시각 t_now = 100.00 s
+tf 버퍼 최신 타임스탬프 = 99.95 s  (50 ms 지연)
+
+lookupTransform(odom, utm, t_now) 요청
+→ t_now(100.00) > 버퍼 최신(99.95)
+→ "미래 시각으로 외삽이 필요함"
+→ ExtrapolationException 발생
+```
+
+이 오류를 방지하는 파라미터가 **`transform_tolerance`** (또는 노드에 따라 `transform_timeout`)이다.
+
+**동작 원리:**
+
+```text
+transform_tolerance = 0.5 s 설정 시
+
+노드가 TF를 요청할 때 내부적으로:
+  요청 시각 = t_now - ε  (혹은 허용 오차 범위 안에서 재시도)
+
+tolerance 기간 안에 원하는 TF가 도착하면 → 정상 변환
+tolerance를 초과해도 도착하지 않으면 → 에러 또는 경고 후 포기
+
+실질적 의미:
+  "최신 TF가 이 시간(0.5 s) 이상 오래되지 않았으면 허용한다"
+```
+
+**CARLA 시뮬레이션 환경에서 TF 지연이 발생하는 이유:**
+
+```text
+CARLA Simulation Time (sim time)
+  ↓ /clock 토픽으로 발행
+  ↓ global_ekf가 /clock 구독 → utm→odom TF 발행
+  ↓ controller_server가 TF 요청
+
+CARLA가 렉(tick 지연)을 겪으면:
+  /clock 업데이트 지연 → global_ekf 갱신 지연 → TF 타임스탬프 지연
+  → controller_server가 요청한 시각 > 최신 TF 타임스탬프
+  → 50 ms 내외의 "미래 외삽" 오류 발생
+```
+
+기본값(0.1 s)은 대부분의 로컬 환경에서 충분하지만, CARLA처럼 sim time 기반 + 간헐적 렉이 있는 환경에서는 0.5 s로 올려야 안정적이다.
+
+---
+
+### 11.2 시스템 내 노드별 TF 조회 여부 분석
+
+우리 시스템에서 TF를 실제로 `lookupTransform`으로 조회하는 노드를 **소스 코드 기반**으로 분류한 결과다.
+
+#### 커스텀 노드 (dual_filter 스택) — TF 조회 없음
+
+| 노드 | 파일 | TF 조회 여부 | 근거 |
+| :--- | :--- | :---: | :--- |
+| `gnss_to_odom` | `dual_filter/gnss_to_odom.py` | ❌ | `tf2_ros` import 없음. UTM→ROS 변환을 수식으로 계산해 `/odometry/gnss` 토픽으로 발행 |
+| `follow_path_client` | `dual_filter/follow_path_client.py` | ❌ | `tf2_ros` import 없음. `/odometry/local` pose를 수신해 가장 가까운 waypoint를 수학적으로 탐색 후 FollowPath action goal 전송 |
+| `cmd_vel_to_carla` | `dual_filter/cmd_vel_to_carla.py` | ❌ | `tf2_ros` import 없음. `/cmd_vel` Twist를 CARLA Python API로 직접 변환 |
+| `csv_to_utm` | `gnss_to_utm/src/csv_to_utm.cpp` | ❌ | `tf2_ros` include 없음. `/utm_datum`을 받아 수식으로 utm 프레임 Path 생성 |
+| `f9r_to_utm` | `gnss_to_utm/src/f9r_to_utm.cpp` | ❌ | NavSatFix → UTM 수식 변환만 수행 |
+| `f9p_to_utm` | `gnss_to_utm/src/f9p_to_utm.cpp` | ❌ | NavSatFix → UTM 수식 변환만 수행 |
+| `azimuth_angle_calculator` | `gnss_to_utm/src/azimuth_angle_calculator.cpp` | ❌ | TF 조회 없음. 단, 두 GNSS 메시지 간 타임스탬프 동기화 허용 오차(`max_time_diff_sec: 0.1`)를 자체적으로 가짐 — 이것은 TF tolerance가 아니라 메시지 동기화 기준 |
+
+> **결론: 우리가 직접 작성한 모든 커스텀 노드는 TF 버퍼를 생성하거나 `lookupTransform`을 호출하지 않는다.** TF 트리에 변환을 _발행_하는 것(local_ekf, global_ekf)과 TF를 _조회_하는 것은 다르다.
+
+#### robot_localization (EKF 노드) — 제한적 TF 조회
+
+| 노드 | TF 조회 여부 | 내용 | tolerance 파라미터 | 현재 설정 |
+| :--- | :---: | :--- | :--- | :--- |
+| `local_ekf` | ⚠️ 조건부 | 센서 `header.frame_id ≠ base_link_frame`이면 TF 조회로 센서 위치 보정. 우리 IMU·wheel odom은 `base_link` 또는 `odom` 프레임으로 발행되므로 실질적 조회 최소화 | `transform_timeout` (default: 0.1 s) | **명시 설정 없음 — 기본값 사용** |
+| `global_ekf` | ⚠️ 조건부 | 동일. `/odometry/gnss`(frame: utm), IMU(frame: base_link), wheel odom(frame: odom) — 각 센서 프레임이 이미 설정된 프레임과 일치하면 TF 조회 발생 안 함 | `transform_timeout` (default: 0.1 s) | **명시 설정 없음 — 기본값 사용** |
+
+> robot_localization의 `transform_timeout`은 "센서 프레임→base_link 변환을 기다리는 최대 시간"이다. 우리 센서들이 이미 적절한 프레임으로 발행되고 있어 현재는 문제가 없지만, 센서 프레임이 바뀔 경우 `ekf_params.yaml`에 `transform_timeout: 0.5`를 추가해야 한다.
+
+#### Nav2 노드 — 명시적 TF 조회 (tolerance 필수)
+
+| 노드 | TF 조회 내용 | tolerance 파라미터 | 현재 설정 | 수정 이력 |
+| :--- | :--- | :--- | :--- | :--- |
+| `controller_server` | `odom → utm` 변환으로 robot_pose를 global plan 프레임으로 변환 | `transform_tolerance` | **0.5 s** ✅ | 기본값 0.1 s → 0.5 s 수정 (주행 중 차량 정지 버그 수정) |
+| `local_costmap` | `odom → base_link` 변환으로 로봇 위치를 costmap에서 추적 | `transform_tolerance` | **0.5 s** ✅ | 초기 설정부터 0.5 s |
+
+---
+
+### 11.3 버그 수정 이력
+
+**증상**: 주행 중 차량이 갑자기 멈추며 다음 에러 발생:
+
+```text
+[controller_server]: Exception in transformPose: Lookup would require extrapolation
+into the future. Requested time 265.118526 but the latest data is at time 265.068526,
+when looking up transform from frame [odom] to frame [utm]
+[controller_server]: Unable to transform robot pose into global plan's frame
+[controller_server]: [follow_path] [ActionServer] Aborting handle.
+```
+
+**원인**: `controller_server`의 `transform_tolerance` 기본값(0.1 s)이 CARLA sim time 렉으로 인한 TF 지연(최대 ~50 ms)을 흡수하지 못함. 지연이 간헐적으로 0.1 s를 초과할 때 abort 발생.
+
+**수정**: `nav2_carla_params.yaml`의 `controller_server` 섹션에 `transform_tolerance: 0.5` 추가.
+
+```yaml
+controller_server:
+  ros__parameters:
+    transform_tolerance: 0.5   # controller_server 자체 TF 조회 허용 지연 (s)
+                               # local_costmap의 transform_tolerance와 별개 파라미터
+```
+
+> **주의**: `local_costmap`의 `transform_tolerance`와 `controller_server`의 `transform_tolerance`는 **별개의 파라미터**다. costmap에만 설정해도 controller_server의 pose 변환 오류는 막을 수 없다.
+
+---
+
+### 11.4 파라미터 상세 (Parameter Reference)
+
+시스템에서 TF 타이밍과 관련된 파라미터 4개를 정리한다.
+
+#### Nav2 — `transform_tolerance`
+
+Nav2의 `transform_tolerance`는 `lookupTransform` 호출 시 **"요청 시각에서 얼마나 오래된 TF까지 허용할 것인가"**를 지정한다.  
+내부적으로 `tf2_ros::Buffer::lookupTransform(frame_a, frame_b, t - tolerance)` 형태로 요청 시각을 뒤로 당겨 ExtrapolationException을 회피한다.
+
+| 파라미터 위치 | 파라미터명 | 현재 값 | 적용 대상 |
+| :--- | :--- | :---: | :--- |
+| `controller_server.ros__parameters` | `transform_tolerance` | **0.5 s** | `odom → utm` 변환 (robot pose를 global plan 프레임으로 변환할 때) |
+| `local_costmap.ros__parameters` | `transform_tolerance` | **0.5 s** | `odom → base_link` 변환 (로봇 위치를 costmap 안에서 추적할 때) |
+
+```yaml
+# nav2_carla_params.yaml
+
+controller_server:
+  ros__parameters:
+    transform_tolerance: 0.5      # (s) CARLA sim time 렉으로 인한 최대 50ms TF 지연 흡수
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      transform_tolerance: 0.5   # (s) 동일 이유; controller_server와 별개 파라미터
+```
+
+> `controller_server`와 `local_costmap`은 **같은 프로세스** 안에서 동작하지만, 각각 독립적으로 `transform_tolerance`를 읽는다. 한 곳에만 설정하면 다른 곳은 기본값(0.1 s)이 적용된다.
+
+---
+
+#### robot_localization — `transform_timeout`
+
+`transform_timeout`은 Nav2의 `transform_tolerance`와 이름도 의미도 다르다.  
+EKF가 **센서 데이터를 base_link 프레임으로 변환할 때** 해당 TF가 도착하기를 기다리는 **최대 대기 시간**이다. 대기 후에도 도착하지 않으면 해당 센서 업데이트를 건너뛴다.
+
+| 파라미터 위치 | 파라미터명 | 현재 값 | 적용 대상 |
+| :--- | :--- | :---: | :--- |
+| `local_ekf.ros__parameters` | `transform_timeout` | **0.1 s (기본값)** | 센서 `header.frame_id → base_link` 변환 |
+| `global_ekf.ros__parameters` | `transform_timeout` | **0.1 s (기본값)** | 동일 |
+
+```yaml
+# ekf_params.yaml — 현재 명시 설정 없음 (기본값 0.1 s 사용)
+
+local_ekf:
+  ros__parameters:
+    # transform_timeout: 0.1   ← 기본값; 센서 프레임이 바뀌면 추가 필요
+
+global_ekf:
+  ros__parameters:
+    # transform_timeout: 0.1   ← 기본값; 센서 프레임이 바뀌면 추가 필요
+```
+
+**현재 명시 설정이 없어도 문제없는 이유:**
+
+우리 센서 데이터는 이미 EKF가 기대하는 프레임으로 발행되고 있다:
+
+| 센서 토픽 | 발행 프레임 | EKF 기대 프레임 | TF 조회 필요 여부 |
+| :--- | :---: | :---: | :---: |
+| `/odometry/wheel` | `base_link` | `base_link` | ❌ 불필요 |
+| `/imu/data` | `base_link` | `base_link` | ❌ 불필요 |
+| `/odometry/gnss` | `utm` | `utm` (world_frame) | ❌ 불필요 |
+
+센서 프레임이 이미 일치하므로 EKF가 `lookupTransform`을 호출할 일이 없고, `transform_timeout` 기본값(0.1 s)이 문제를 일으키지 않는다.
+
+**`transform_timeout` 명시 설정이 필요한 경우:**
+
+센서의 `header.frame_id`가 `base_link`가 아닌 다른 프레임(예: `imu_link`, `lidar_link`)으로 바뀌면 EKF가 해당 프레임 → `base_link` TF를 조회하게 된다. 이때 CARLA 렉으로 TF 도착이 늦어지면 센서 업데이트가 누락될 수 있으므로 `ekf_params.yaml`에 다음을 추가한다:
+
+```yaml
+local_ekf:
+  ros__parameters:
+    transform_timeout: 0.5     # s — 센서 프레임이 base_link가 아닐 때만 필요
+
+global_ekf:
+  ros__parameters:
+    transform_timeout: 0.5     # s — 동일
+```
+
+---
+
+#### 파라미터 비교 요약
+
+| 파라미터명 | 소속 패키지 | 의미 | 현재 값 |
+| :--- | :--- | :--- | :---: |
+| `controller_server` → `transform_tolerance` | Nav2 | TF 지연 허용 시간 (오래된 TF 허용 범위) | 0.5 s ✅ |
+| `local_costmap` → `transform_tolerance` | Nav2 | 동일 (costmap 독립 설정) | 0.5 s ✅ |
+| `local_ekf` → `transform_timeout` | robot_localization | 센서 프레임 TF 대기 최대 시간 | 0.1 s (기본값) |
+| `global_ekf` → `transform_timeout` | robot_localization | 동일 | 0.1 s (기본값) |
+
+> Nav2의 `transform_tolerance`와 robot_localization의 `transform_timeout`은 이름도, 의미도, 작동 방식도 다르다. 혼용하면 파라미터가 무시된다.
+

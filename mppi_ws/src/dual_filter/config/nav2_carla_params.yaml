@@ -32,6 +32,12 @@ controller_server:
     #   MPPI가 오동작할 수 있으므로 local을 권장.
     odom_topic: /odometry/local
 
+    # ── TF 변환 허용 지연 ────────────────────────────────────────────────────────
+    # controller_server가 odom→utm 변환 시 허용하는 TF 지연 시간.
+    # CARLA sim time에서 global_ekf TF가 최대 50ms 지연 → 기본값 0.1s 초과 가능.
+    # local_costmap의 transform_tolerance(0.5s)와 일치시켜 일관성 유지.
+    transform_tolerance: 0.5
+
     # ── costmap 갱신 타임아웃 ─────────────────────────────────────────────────
     # costmap이 이 시간(s) 안에 갱신되지 않으면 controller_server가 실패 처리.
     # CARLA sim time에서 LiDAR 콜백 지연이 발생하므로 기본값 0.30 s 유지.
@@ -107,12 +113,12 @@ controller_server:
 
       # ── 예측 수평선 ───────────────────────────────────────────────────────
       # 예측 구간 = time_steps × model_dt
-      #          = 56 × 0.05 s = 2.8 s
-      # vx_max = 5 m/s 기준 2.8 s 동안 이동 거리 = 14 m → 충분한 예측 거리.
+      #          = 40 × 0.1 s = 4.0 s
+      # vx_max = 5 m/s 기준 4.0 s 동안 이동 거리 = 20 m → 충분한 예측 거리.
       # time_steps 증가 시: 더 긴 예측 → 급커브 사전 감지 가능, but 계산 증가.
       time_steps: 40
       # model_dt = 1 / controller_frequency (반드시 일치시킬 것)
-      model_dt:   0.05                 # s
+      model_dt:   0.1                  # s  (변경: 0.05→0.1, controller_frequency 10Hz 기준)
 
       # ── 샘플 궤적 수 ──────────────────────────────────────────────────────
       # CPU 환경에서 1000~2000 적절. GPU 가속 시 4096 이상 권장.
