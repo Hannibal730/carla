@@ -19,7 +19,12 @@
     <publisher profile_name="default publisher profile" is_default_profile="true">
             <qos>
                 <publishMode>
-                    <kind>SYNCHRONOUS</kind>
+                    <!-- ASYNCHRONOUS: 발행 스레드가 DDS 전송 완료를 기다리지 않음.
+                         SYNCHRONOUS이면 lidar 등 대형 메시지 발행 시 Python 콜백
+                         스레드 전체가 블로킹되어 wheel odom / clock 지연 발생.
+                         NOTE: .bashrc에서 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 이면
+                         이 파일 전체가 무시됨. FastRTPS로 전환 시에만 적용됨. -->
+                    <kind>ASYNCHRONOUS</kind>
                 </publishMode>
             </qos>
             <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>

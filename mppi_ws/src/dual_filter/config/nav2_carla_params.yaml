@@ -18,9 +18,11 @@ controller_server:
     # ── 제어 루프 주파수 ──────────────────────────────────────────────────────
     # local_ekf 주파수(50 Hz)보다 반드시 낮게 설정해야 매 제어 주기마다
     # 최신 odometry를 수신할 수 있다.
-    # 20 Hz = model_dt 와 역수 관계: controller_frequency × model_dt = 1
-    # 20 Hz를 넘기면 계산 부하가 급격히 증가 (batch_size × time_steps × freq).
-    controller_frequency: 20.0           # Hz
+    # 10 Hz → 100ms 예산. MPPI(batch 500 × step 40) + costmap 조회가
+    # 간헐적으로 50ms(20Hz 예산)를 초과해 "Control loop missed" 경고 발생.
+    # 10 Hz로 내리면 예산이 2배가 되어 스파이크를 흡수할 수 있다.
+    # model_dt = 1 / controller_frequency 반드시 함께 수정.
+    controller_frequency: 10.0           # Hz  (변경: 20→10)
 
     # ── odometry 소스 ─────────────────────────────────────────────────────────
     # /odometry/local : local EKF 출력 (wheel + IMU만 융합, GNSS 불포함)
@@ -144,7 +146,7 @@ controller_server:
       # vx_min: 소폭 후진 허용 (경로 시작점 재접근 등).
       # wz_max: min_turning_r 과 물리적으로 일관되어야 함.
       #   wz_max = vx_max / min_turning_r = 5.0 / 3.3 ≈ 1.5 rad/s
-      vx_max:  5.0                     # m/s  ← 처음엔 2.0으로 시작 권장
+      vx_max:  5.0                      # m/s  ← 처음엔 2.0으로 시작 권장
       vx_min: -0.5                     # m/s
       wz_max:  1.5                     # rad/s
 
@@ -170,7 +172,8 @@ controller_server:
       # ── 시각화 ───────────────────────────────────────────────────────────
       # true: /trajectories 토픽으로 모든 후보 궤적 발행 → RViz2 확인 가능.
       # 성능 부족 환경에서는 false 로 전환해 CPU 절약.
-      visualize: true
+      # false: batch_size(1000) × time_steps(40) × 20Hz = 800,000 pose/s DDS 트래픽 차단
+      visualize: false
 
       # ── 노이즈 재생성 ────────────────────────────────────────────────────
       # true: 매 제어 주기마다 새 노이즈 샘플 생성 (탐색 다양성 최대화).
@@ -355,9 +358,10 @@ local_costmap:
       resolution:   0.1                # m/cell  (200 × 200 격자)
 
       # ── TF 지연 허용 ────────────────────────────────────────────────────
-      # CARLA sim time 환경에서 TF 발행 지연 허용.
-      # "Could not get transform" 에러 발생 시 0.5 로 증가.
-      transform_tolerance: 0.3         # s
+      # controller_server도 costmap의 이 값을 그대로 사용한다
+      # (controller_server.cpp: costmap_ros_->getTransformTolerance()).
+      # 0.3 → 0.5: CARLA 렉으로 TF가 최대 50ms 지연될 때 충분한 여유 확보.
+      transform_tolerance: 0.5         # s
 
       # ── 레이어 목록 ────────────────────────────────────────────────────
       plugins: ["obstacle_layer", "inflation_layer"]
@@ -386,10 +390,9 @@ local_costmap:
           marking:  true
 
           # raytrace_max_range: 이 거리 이상의 격자는 레이캐스팅으로 비움.
-          #   lidar_2d range(40 m)의 절반으로 설정 → 원거리 오검출 방지.
           # obstacle_max_range: 이 거리 이상의 포인트는 장애물로 마킹 안 함.
-          #   lidar 정확도가 높은 15 m 이내만 신뢰.
-          raytrace_max_range: 20.0     # m
+          # lidar_2d range를 40→20m로 줄였으므로 함께 조정.
+          raytrace_max_range: 18.0     # m  (변경: 20→18, lidar range 20m 기준)
           obstacle_max_range: 15.0     # m
 
       # ── inflation_layer ───────────────────────────────────────────────
@@ -408,5 +411,5 @@ local_costmap:
         cost_scaling_factor: 3.0
 
       # RViz2 에서 costmap을 실시간으로 확인하려면 true 로 유지.
-      # 성능 부족 시 false 로 전환하면 변경된 셀만 발행.
-      always_send_full_costmap: true
+      # false: 변경된 셀만 발행 → costmap 10Hz 발행 부하 대폭 감소
+      always_send_full_costmap: false

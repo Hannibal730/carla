@@ -59,7 +59,7 @@ local_ekf:
 global_ekf:
   ros__parameters:
     use_sim_time: true
-    frequency: 30.0
+    frequency: 50.0   # 30→50: controller 20Hz 주기(50ms) 안에 TF가 반드시 갱신되도록
     two_d_mode: true
     publish_tf: true
 
