@@ -38,7 +38,7 @@
 | :--- | :--- | :--- |
 | CARLA simulation clock | `/clock` | `rosgraph_msgs/msg/Clock` |
 | RGB 카메라 | `/carla/car/rgb/image` | `sensor_msgs/msg/Image` |
-| LiDAR (3D) | `/carla/car/lidar/point_cloud` | `sensor_msgs/msg/PointCloud2` |
+| LiDAR (3D) | `/carla/car/lidar_3d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
 | LiDAR (2D) | `/carla/car/lidar_2d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
 | GNSS (후륜축) | `/carla/car/f9r/fix` | `sensor_msgs/msg/NavSatFix` |
 | GNSS (전방 1.4m) | `/carla/car/f9p/fix` | `sensor_msgs/msg/NavSatFix` |
@@ -215,7 +215,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 
 ### 3.1 EKF가 실제로 사용하는 메시지 필드
 
-아래 표는 전체 파이프라인에서 실제로 필터 계산에 들어가는 필드만 분리한 것이다. 카메라와 LiDAR는 RViz 확인용이며 현재 dual EKF 입력으로는 사용하지 않는다.
+아래 표는 전체 파이프라인에서 실제로 필터 계산에 들어가는 필드만 분리한 것이다. 카메라는 RViz 확인용이며 현재 dual EKF 입력으로는 사용하지 않는다.
 
 | 토픽 | 메시지 타입 | 사용하는 필드 | 사용 노드 | 목적 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -658,7 +658,7 @@ mppi_ws/
 │       │   ├── gnss_to_odom.py        ← Node 1d: /f9r_utm + /azimuth_angle → /odometry/gnss + /utm_datum
 │       │   ├── path_visualizer.py     ← Odometry → Path 누적 발행 (3개 인스턴스)
 │       │   ├── cmd_vel_to_carla.py    ← /cmd_vel (Twist) → CARLA VehicleControl
-│       │   ├── follow_path_client.py  ← /csv_path 수신 → FollowPath action goal 전송
+│       │   ├── follow_path_client.py  ← IDLE/CSV_FOLLOWING/PARKING 상태 머신 — CSV 추종 ↔ 주차 모드 전환
 │       │   └── mppi_speed_calc.py     ← MPPI 속도 계산 보조 노드
 │       ├── config/
 │       │   ├── ekf_params.yaml        ← Section 5 파라미터 (local_ekf + global_ekf)
@@ -1004,7 +1004,7 @@ MPPI는 critics를 통해 trajectory cost를 계산하고, obstacle 관련 criti
 | 요구사항 | 현재 파이프라인 충족 여부 | 추가 필요 |
 | :--- | :--- | :--- |
 | local costmap | 별도 설정 필요 | Nav2 local_costmap 구성 |
-| obstacle layer 입력 | 가능성 있음 | `/carla/car/lidar/point_cloud` 또는 2D LiDAR topic을 costmap observation source로 연결 |
+| obstacle layer 입력 | 가능성 있음 | `/carla/car/lidar_2d/point_cloud`를 costmap observation source로 연결 |
 | inflation layer | 별도 설정 필요 | 차량 footprint와 inflation radius 튜닝 |
 | robot footprint | 별도 설정 필요 | CARLA 차량 크기에 맞는 footprint 설정 |
 
@@ -1311,7 +1311,7 @@ ros2 run serial_bridge serial_bridge
 | Nav2 패키지 설치 | ✅ | `nav2_controller`, `nav2_mppi_controller`, `nav2_costmap_2d`, `nav2_lifecycle_manager` 1.1.20 apt 설치 완료 |
 | controller_server 설정 파일 | ✅ | `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml` 작성 완료. controller_server 3계층(제어루프·MPPI플러그인·local_costmap) + 7개 critic 설정. 차량별 튜닝 필수값: `min_turning_r`, `vx_max` |
 | `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(-wz·L, vx), CARLA steer 부호 반전 적용) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
-| global path 공급 | ✅ | `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. `/csv_path` transient_local 구독 → FollowPath action goal 전송. action 수락 시 MPPI 경로 추종 시작 |
+| global path 공급 + 모드 전환 | ✅ | `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. IDLE/CSV_FOLLOWING/PARKING 상태 머신. CSV 경로 추종 + RViz 2D Goal Pose 기반 주차 모드 전환 (ComputePathToPose → FollowPath) + 주차 완료 후 자동 CSV 복귀 |
 | local costmap 설정 | ✅ | `nav2_carla_params.yaml` 안에 포함. obstacle_layer(`/carla/car/lidar_2d/point_cloud`) + inflation_layer(1.5 m) + `CostCritic` 구성 완료. lidar_2d → obstacle_layer → inflation_layer → CostCritic 파이프라인 활성화. costmap은 `/local_costmap/costmap`으로 10 Hz 발행 중 |
 
 ---
@@ -1396,25 +1396,105 @@ ros2 run dual_filter cmd_vel_to_carla \
 
 파일 위치: `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py`
 
-`csv_to_utm`이 발행하는 `/csv_path`를 받아 `controller_server`의 `FollowPath` action에 goal을 전송하는 노드.
+ROS 2 노드 이름: `follow_path_client` (launch 파일의 `name` 파라미터)
 
-#### 동작 흐름
+CSV 경로 추종과 주차 모드를 IDLE / CSV_FOLLOWING / PARKING 세 가지 상태로 관리하는 상태 머신 노드. 단순히 CSV path를 전달하는 것에서 나아가, RViz "2D Goal Pose" 클릭으로 주차 모드 전환 → 경로 계산 → 주차 실행 → 자동 복귀까지의 전체 흐름을 조율한다.
+
+---
+
+#### 상태 머신
 
 ```text
-csv_to_utm 발행 → /csv_path (transient_local)
-      ↓ 구독 (동일 transient_local QoS 필수)
-follow_path_client
-      ↓ FollowPath.Goal 구성 (controller_id='FollowPath')
-controller_server /follow_path action server
-      ↓ goal accepted
-MPPI 경로 추종 시작 → /cmd_vel 발행
+IDLE
+  │  /csv_path 수신 + /odometry/local 수신 시 자동 전환
+  ▼
+CSV_FOLLOWING ──────────── FollowPath action 전송 중 (/csv_path 경로 추종)
+  │  RViz "2D Goal Pose" 클릭 (/goal_pose 수신)
+  │  → 현재 FollowPath 취소 → PARKING 전환
+  ▼
+PARKING ────────────────── ComputePathToPose → FollowPath 순으로 주차 기동
+  │  주차 FollowPath 완료 (성공/실패/취소 무관)
+  │  → IDLE → CSV_FOLLOWING 자동 복귀
+  ▼
+(CSV_FOLLOWING 재진입)
 ```
+
+| 상태 | 의미 | controller_server에 goal 유무 |
+| :--- | :--- | :---: |
+| `IDLE` | 대기. CSV나 odometry가 아직 없을 때, 또는 전환 직전 순간 | 없음 |
+| `CSV_FOLLOWING` | `/csv_path`를 따라 MPPI 자율주행 중 | FollowPath 실행 중 |
+| `PARKING` | RViz로 지정한 목표로 주차 기동 중 | ComputePathToPose → FollowPath 순 |
+
+---
+
+#### 토픽 인터페이스
+
+| 방향 | 토픽 | 타입 | QoS | 설명 |
+| :---: | :--- | :--- | :---: | :--- |
+| 구독 | `/csv_path` | `nav_msgs/Path` | transient_local RELIABLE | CSV 경로. `csv_to_utm` 발행 |
+| 구독 | `/odometry/local` | `nav_msgs/Odometry` | depth 10 | 현재 위치. `local_ekf` 발행 |
+| 구독 | `/goal_pose` | `geometry_msgs/PoseStamped` | depth 10 | RViz "2D Goal Pose" 클릭 시 발행 |
+| 발행 | `/mode_status` | `std_msgs/String` | depth 10 | 현재 모드 문자열 (1 Hz 타이머) |
+
+---
+
+#### Action 클라이언트
+
+| Action | 서버 | 용도 |
+| :--- | :--- | :--- |
+| `follow_path` | `controller_server` | CSV 추종 및 주차 경로 실행 |
+| `compute_path_to_pose` | `planner_server` | 주차 목표까지의 Reeds-Shepp 경로 계산 |
+
+---
+
+#### 주차 동작 흐름
+
+```text
+① RViz "2D Goal Pose" 클릭
+      ↓ /goal_pose (PoseStamped, 위치 + 화살표 방향=최종 heading)
+
+② 현재 CSV FollowPath goal 취소 (cancel_goal_async)
+      ↓ 취소 확인 후
+
+③ planner_server.wait_for_server(timeout_sec=5.0)
+      ↓ ComputePathToPose goal 전송
+         goal.goal      = goal_pose (위치 + heading 포함)
+         goal.planner_id = 'GridBased'  (SmacPlannerHybrid REEDS_SHEPP)
+         goal.use_start  = False         (현재 로봇 위치를 시작점으로 사용)
+
+④ 경로 계산 완료 → path (nav_msgs/Path) 수신
+      ↓ 경로가 비어있으면 → IDLE → CSV 복귀
+
+⑤ controller_server.wait_for_server(timeout_sec=5.0)
+      ↓ FollowPath goal 전송 (계산된 주차 경로)
+
+⑥ 주차 FollowPath 완료 (status 4/5/6 무관) → IDLE → CSV 복귀
+```
+
+> **화살표 방향과 주차 heading**: RViz에서 드래그한 화살표 머리 방향 = 차량이 도착했을 때 전면이 향하는 방향. SmacPlannerHybrid(REEDS_SHEPP)가 이 최종 heading을 반드시 만족하는 경로를 계산하므로, 화살표 방향을 정확히 지정해야 원하는 진입 방향으로 주차된다.
+
+---
+
+#### CSV 경로 트리밍
+
+`/csv_path` 수신 또는 CSV 복귀 시, 로봇 현재 위치에서 가장 가까운 waypoint 인덱스를 찾아 그 이후 구간만 잘라서 `FollowPath`에 전송한다. 경로 시작점이 로봇 현재 위치보다 멀리 있어도 정상 동작한다.
+
+```text
+로봇 현재 위치 (UTM x, y)
+  → 전체 /csv_path 를 순회 → 가장 가까운 waypoint index 탐색
+  → trimmed_path = poses[closest_idx:]
+  → FollowPath(trimmed_path)
+```
+
+---
 
 #### QoS 주의사항
 
-`csv_to_utm`은 `/csv_path`를 `transient_local RELIABLE KeepLast(1)`로 발행한다. `follow_path_client`가 **다른 QoS로 구독하면 경로를 영원히 수신하지 못한다**. 코드 내 `_path_qos`가 동일 QoS로 설정되어 있으므로 수정하지 않는다.
+`csv_to_utm`은 `/csv_path`를 `transient_local RELIABLE KeepLast(1)`로 발행한다. `follow_path_client`가 **다른 QoS로 구독하면 경로를 영원히 수신하지 못한다**. 코드 내 QoS가 동일하게 설정되어 있으므로 수정하지 않는다.
 
-#### action 결과 코드
+---
+
+#### Action 결과 코드
 
 ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
 
@@ -1423,6 +1503,14 @@ ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
 | 4 | 성공 (SUCCEEDED — 목표 도달) |
 | 5 | 취소됨 (CANCELED) |
 | 6 | 중단 (ABORTED — progress_checker 실패 또는 controller 오류) |
+
+주차 결과(`_on_parking_result`)는 status 값에 무관하게 항상 CSV 복귀를 실행한다. 주차가 ABORTED로 실패해도 자동으로 CSV 추종으로 돌아간다.
+
+---
+
+#### `wait_for_server` 사용 이유
+
+`server_is_ready()` (timeout=0)는 DDS 발견 이전에 호출되면 즉시 `False`를 반환한다. 이 경우 `_start_parking()`이 즉시 종료되어 PARKING → IDLE 전환이 수 ms 만에 일어나고, 1초 타이머 기반 `/mode_status` 발행에서 PARKING 상태가 관측되지 않는 버그가 발생한다. `wait_for_server(timeout_sec=5.0)`으로 DDS 발견을 충분히 기다린다.
 
 ---
 
@@ -1527,6 +1615,79 @@ csv_to_utm:
 | RViz 경로 시각화 | 꺾은선 | 부드러운 곡선 |
 
 > **10 cm 간격의 trade-off**: 원시 300점 → 보간 후 5000점. `csv_to_utm`이 발행하는 `/csv_path`의 pose 수가 증가하므로 `PathHandler`의 pruning 빈도가 올라간다. 경로가 매우 길어(5 km 이상) 메모리 사용이 걱정될 경우 `--interval 0.2`(20 cm)로 타협 가능.
+
+---
+
+### 10.6 `controller.launch.py` 상세
+
+파일 위치: `mppi_ws/src/dual_filter/launch/controller.launch.py`
+
+`controller_server`, `planner_server`, `lifecycle_manager`, `follow_path_client` 네 노드를 하나의 launch 파일로 묶어 실행한다. 이 파일을 사용하는 이유는 `controller_server`와 `planner_server`가 Nav2 lifecycle 노드이기 때문이다 — `ros2 run`으로 단독 실행하면 UNCONFIGURED 상태로 멈춰 action server가 활성화되지 않는다.
+
+---
+
+#### 포함 노드 목록
+
+| 노드 | 패키지 | 실행파일 | 역할 |
+| :--- | :--- | :--- | :--- |
+| `controller_server` | `nav2_controller` | `controller_server` | MPPI 제어 루프. `/follow_path` action server 제공 |
+| `planner_server` | `nav2_planner` | `planner_server` | SmacPlannerHybrid. `/compute_path_to_pose` action server 제공 |
+| `lifecycle_manager_controller` | `nav2_lifecycle_manager` | `lifecycle_manager` | 두 서버를 `configure → activate` 로 자동 전환 (`autostart: True`) |
+| `follow_path_client` | `dual_filter` | `follow_path_client` | IDLE/CSV_FOLLOWING/PARKING 상태 머신 |
+
+---
+
+#### 파라미터
+
+모든 노드는 `use_sim_time: True`로 실행된다. `controller_server`와 `planner_server`는 `nav2_carla_params.yaml`을 공통 파라미터 파일로 사용한다.
+
+```python
+params_file = os.path.join(
+    get_package_share_directory('dual_filter'),
+    'config', 'nav2_carla_params.yaml',
+)
+```
+
+---
+
+#### lifecycle_manager 동작
+
+```text
+ros2 launch dual_filter controller.launch.py
+  ↓
+lifecycle_manager_controller 시작 (autostart=True)
+  ↓ node_names: ['controller_server', 'planner_server']
+  ↓ configure → activate 순으로 두 서버 전환
+  ↓ "Managed nodes are active" 로그 출력
+
+이후:
+  controller_server: /follow_path action server 활성화
+  planner_server:    /compute_path_to_pose action server 활성화
+  follow_path_client: 두 action server 발견 후 CSV 추종 시작
+```
+
+확인 명령:
+
+```bash
+ros2 lifecycle get /controller_server    # active [3] 이어야 정상
+ros2 lifecycle get /planner_server       # active [3] 이어야 정상
+ros2 action info /follow_path            # Action servers: 1 이어야 정상
+ros2 action info /compute_path_to_pose   # Action servers: 1 이어야 정상
+```
+
+---
+
+#### launch 실행 명령
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/carla/nav2_ws/install/setup.bash   # OpenMP 빌드 버전 (없으면 생략)
+source ~/carla/mppi_ws/install/setup.bash
+export OMP_NUM_THREADS=8
+ros2 launch dual_filter controller.launch.py
+```
+
+> **`follow_path_client` 중복 실행 주의**: `controller.launch.py`에 `follow_path_client`가 포함되어 있으므로, `ros2 run dual_filter follow_path_client`를 별도 터미널에서 추가 실행하면 두 인스턴스가 동시에 `/goal_pose`를 구독해 주차 모드 전환이 오동작한다.
 
 ---
 
@@ -1724,9 +1885,15 @@ source install/setup.bash
 터미널 4: dual_filter launch (EKF + GNSS 파이프라인)
 터미널 5 (선택): RViz2 시각화
 터미널 6: csv_to_utm launch (경로 파일 → /csv_path)
-터미널 7: controller_server + lifecycle_manager (Nav2 MPPI 자동 활성화)
+터미널 7: controller.launch.py
+           ├─ controller_server (MPPI, Nav2 lifecycle)
+           ├─ planner_server    (SmacPlannerHybrid, Nav2 lifecycle)
+           ├─ lifecycle_manager (autostart: 두 서버 자동 activate)
+           └─ follow_path_client (CSV 추종 ↔ 주차 모드 전환)
 터미널 8: cmd_vel_to_carla (MPPI → CARLA 제어)
-터미널 9: follow_path_client (경로 추종 시작)
+
+※ 터미널 9는 불필요 — follow_path_client 가 controller.launch.py 에 통합됨
+  (ros2 run dual_filter follow_path_client 를 별도 실행하면 중복 인스턴스 발생)
 ```
 
 #### 터미널 1 — CARLA 시뮬레이터
@@ -1829,13 +1996,10 @@ ros2 run dual_filter cmd_vel_to_carla \
   -- --rolename car --wheelbase 1.47
 ```
 
-#### 터미널 9 — 경로 추종 시작
+#### 주차 사용법
 
-```bash
-source /opt/ros/humble/setup.bash
-source ~/carla/mppi_ws/install/setup.bash
-ros2 run dual_filter follow_path_client
-```
+RViz2 툴바에서 "2D Goal Pose" 선택(단축키 G) → 목표 위치에서 드래그해 진입 방향 지정 → 마우스 놓으면 `follow_path_client` 가 자동으로 플래너 호출 → 주차 기동.
+
 
 ### 12.2 동작 확인
 
@@ -2114,6 +2278,46 @@ csv_to_utm_node = Node(
 | 해결 A (즉시 적용) | `nav2_carla_params.yaml` 에서 계산량 감소: `batch_size: 2000 → 1000`, `time_steps: 56 → 40`, `visualize: false`, `controller_frequency: 10.0`, `model_dt: 0.10` |
 | 해결 B (근본 해결) | nav2_mppi_controller 소스 빌드 + OpenMP 활성화 → [Section 12.7](#127-nav2_mppi_controller-openmp-빌드-연산-과다-근본-해결) 참고. i7-13700HX 24 스레드 기준 약 10x 속도 향상 기대 |
 | 확인 | `ros2 topic hz /cmd_vel` → 설정한 `controller_frequency` 에 근접하는지 확인 |
+
+---
+
+**⑧ PARKING 모드로 전환되지 않음 — `server_is_ready()` DDS 발견 전 즉시 False**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 증상 | RViz "2D Goal Pose" 클릭 후 `/mode_status` 에코에서 `PARKING`이 나타나지 않고 `CSV_FOLLOWING` / `IDLE` 만 반복됨 |
+| 에러 | 없음 (로그에 오류 없이 조용히 실패) |
+| 원인 | `_start_parking()` 내부에서 `planner_client.server_is_ready()`(timeout=0)를 사용. DDS 발견이 아직 완료되지 않은 경우 즉시 `False` 반환 → 함수 즉시 종료 → `PARKING → IDLE` 전환이 수 ms 만에 발생 → 1 초 주기 `/mode_status` 타이머에서 PARKING 상태가 관측되지 않음 |
+| 수정 파일 | `dual_filter/follow_path_client.py` |
+| 수정 내용 | `server_is_ready()` → `wait_for_server(timeout_sec=5.0)` 로 변경. `_send_follow_path()` 내의 `follow_client.server_is_ready()` 도 동일하게 수정 |
+| 확인 | `follow_path_client` 로그에 `[PARK] planner_server 에 경로 요청 중 ...` → `[PARK] planner_server goal 수락.` 출력 |
+
+---
+
+**⑨ `global_costmap` 범위 오류 — planner가 경로 계산 불가**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 증상 | 주차 시도 시 플래너가 빈 경로를 반환, `[PARK] 주차 경로 계산 실패 (빈 경로)` 로그 |
+| 에러 | `[costmap_2d]: Sensor origin at (36.20, -117.72) is out of map bounds (0.00, 0.00) to (4.95, 4.95)` |
+| 원인 | `global_costmap`에 `rolling_window`, `width`, `height`, `resolution` 미설정 → Nav2 기본값 적용: **5 m × 5 m 고정 격자, 원점 UTM (0,0)에 앵커됨**. 로봇의 실제 UTM 위치(예: 36.20, -117.72)가 맵 완전 밖에 있어 플래너가 시작점을 찾지 못함 |
+| 핵심 개념 | `global_frame: utm`은 좌표계 선택이고, costmap 크기/원점은 별도 파라미터. `rolling_window: false`(기본값)이면 costmap 원점이 UTM (0,0)에 고정됨 |
+| 수정 파일 | `dual_filter/config/nav2_carla_params.yaml` |
+| 수정 내용 | `global_costmap` 섹션에 추가: `rolling_window: true`, `width: 200`, `height: 200`, `resolution: 0.2`, `transform_tolerance: 0.5` |
+| 확인 | `ros2 topic echo /global_costmap/costmap --no-arr` → `info.origin.position` 이 로봇 위치 근처로 업데이트되는지 확인 |
+
+---
+
+**⑩ `AttributeError: 'FollowPath_Result' has no attribute 'error_code'` — 노드 크래시**
+
+| 항목 | 내용 |
+| :--- | :--- |
+| 증상 | 2D Goal Pose 클릭 후 CSV FollowPath 취소 완료 시점에 `follow_path_client` 프로세스가 즉시 종료. 차량이 정지한 채로 멈춤 |
+| 에러 | `AttributeError: 'FollowPath_Result' object has no attribute 'error_code'` (`_on_csv_result` 콜백) |
+| 원인 | Nav2 Humble 1.1.x 의 `FollowPath` action result 에는 `error_code` 필드가 없음. 취소된 CSV goal 의 result 콜백이 호출될 때 직접 필드 접근으로 AttributeError 발생 → 노드 죽음 |
+| 수정 파일 | `dual_filter/follow_path_client.py` |
+| 수정 내용 | `_on_csv_result`, `_on_parking_result` 두 곳에서 `result.result.error_code` → `getattr(result.result, 'error_code', 'N/A')` 로 변경 |
+| 확인 | 로그에 `[CSV] FollowPath 완료. status=5, error_code=N/A` 출력 후 노드 정상 유지 |
 
 ---
 
@@ -3001,7 +3205,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 | 노드 | 파일 | TF 조회 여부 | 근거 |
 | :--- | :--- | :---: | :--- |
 | `gnss_to_odom` | `dual_filter/gnss_to_odom.py` | ❌ | `tf2_ros` import 없음. UTM→ROS 변환을 수식으로 계산해 `/odometry/gnss` 토픽으로 발행 |
-| `follow_path_client` | `dual_filter/follow_path_client.py` | ❌ | `tf2_ros` import 없음. `/odometry/local` pose를 수신해 가장 가까운 waypoint를 수학적으로 탐색 후 FollowPath action goal 전송 |
+| `follow_path_client` | `dual_filter/follow_path_client.py` | ❌ | `tf2_ros` import 없음. IDLE/CSV_FOLLOWING/PARKING 상태 머신. `/odometry/local` pose로 waypoint를 수학적으로 탐색하고, FollowPath / ComputePathToPose action goal 전송 |
 | `cmd_vel_to_carla` | `dual_filter/cmd_vel_to_carla.py` | ❌ | `tf2_ros` import 없음. `/cmd_vel` Twist를 CARLA Python API로 직접 변환 |
 | `csv_to_utm` | `gnss_to_utm/src/csv_to_utm.cpp` | ❌ | `tf2_ros` include 없음. `/utm_datum`을 받아 수식으로 utm 프레임 Path 생성 |
 | `f9r_to_utm` | `gnss_to_utm/src/f9r_to_utm.cpp` | ❌ | NavSatFix → UTM 수식 변환만 수행 |

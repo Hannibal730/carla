@@ -1,13 +1,20 @@
 """
-Nav2 Controller Server Launch
-==============================
-controller_server (MPPI) + lifecycle_manager 을 함께 기동한다.
-lifecycle_manager 가 autostart=True 로 controller_server 를 자동으로
+Nav2 Controller + Planner Server Launch
+========================================
+controller_server (MPPI) + planner_server (SmacPlannerHybrid) +
+lifecycle_manager + mode_manager 를 함께 기동한다.
+
+lifecycle_manager 가 autostart=True 로 두 서버를 자동으로
 configure → activate 전환하므로 별도의 lifecycle set 명령이 불필요하다.
+
+모드 전환:
+  - RViz "2D Goal Pose" 클릭 → /goal_pose 발행 → mode_manager 수신
+    → CSV 추종 취소 → planner_server 경로 계산 → MPPI 주차 기동
+  - 주차 완료 후 자동으로 CSV 경로 추종 복귀
 
 사용법:
   source /opt/ros/humble/setup.bash
-  source ~/carla/mppi/install/setup.bash
+  source ~/carla/mppi_ws/install/setup.bash
   ros2 launch dual_filter controller.launch.py
 """
 import os
@@ -30,6 +37,15 @@ def generate_launch_description():
         parameters=[params_file, {'use_sim_time': True}],
     )
 
+    planner_server = Node(
+        package='nav2_planner',
+        executable='planner_server',
+        name='planner_server',
+        output='screen',
+        parameters=[params_file, {'use_sim_time': True}],
+    )
+
+    # controller_server + planner_server 를 함께 lifecycle 관리
     lifecycle_manager = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -38,11 +54,22 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': True,
             'autostart': True,
-            'node_names': ['controller_server'],
+            'node_names': ['controller_server', 'planner_server'],
         }],
+    )
+
+    # CSV 경로 추종 ↔ 주차 모드 전환 노드
+    follow_path_client = Node(
+        package='dual_filter',
+        executable='follow_path_client',
+        name='follow_path_client',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
     )
 
     return LaunchDescription([
         controller_server,
+        planner_server,
         lifecycle_manager,
+        follow_path_client,
     ])

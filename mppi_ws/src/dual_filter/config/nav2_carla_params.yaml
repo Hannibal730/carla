@@ -173,7 +173,10 @@ controller_server:
       # wz_max: min_turning_r 과 물리적으로 일관되어야 함.
       #   wz_max = vx_max / min_turning_r = 5.0 / 3.3 ≈ 1.5 rad/s
       vx_max:  5.0                      # m/s  ← 처음엔 2.0으로 시작 권장
-      vx_min: -0.5                     # m/s
+      # vx_min: 주차 후진 기동을 위해 -2.0으로 확장.
+      # CSV 추종 중 불필요한 후진은 PreferForwardCritic이 억제하므로
+      # 두 모드를 별도로 설정할 필요 없음.
+      vx_min: -2.0                     # m/s  (변경: -0.5→-2.0, 주차 후진 허용)
       wz_max:  1.5                     # rad/s
 
       # ── MPPI 반복 횟수 ────────────────────────────────────────────────────
@@ -498,3 +501,117 @@ local_costmap:
       # RViz2 에서 costmap을 실시간으로 확인하려면 true 로 유지.
       # false: 변경된 셀만 발행 → costmap 10Hz 발행 부하 대폭 감소
       always_send_full_costmap: true
+
+# =============================================================================
+# planner_server
+# RViz "2D Goal Pose" 클릭 → /goal_pose (PoseStamped) → 모드 매니저가 수신
+# → ComputePathToPose action 호출 → 주차 경로 계산
+# → FollowPath action 으로 controller_server(MPPI) 에 전달
+# =============================================================================
+planner_server:
+  ros__parameters:
+    use_sim_time: true
+    planner_plugins: ["GridBased"]
+
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlannerHybrid"
+
+      # ── 운동 모델 ──────────────────────────────────────────────────────────
+      # REEDS_SHEPP: 전진 + 후진 모두 허용 → 주차 기동 필수
+      # DUBIN      : 전진만 허용 (주차 불가)
+      motion_model_for_search: "REEDS_SHEPP"
+
+      # ── Ackermann 최소 회전반경 ────────────────────────────────────────────
+      # MPPI ackermann.min_turning_r 과 반드시 일치시킬 것.
+      minimum_turning_radius: 3.3      # m  (microlino 기준)
+
+      # ── 탐색 각도 해상도 ───────────────────────────────────────────────────
+      # yaw 를 몇 단계로 분할할지. 72 = 5° 간격.
+      # 높일수록 주차 heading 이 정밀해지지만 탐색 시간 증가.
+      angle_quantization_bins: 72
+
+      # ── 탐색 비용 가중치 ───────────────────────────────────────────────────
+      # reverse_penalty   : 후진 구간에 부여하는 비용. 높을수록 후진 최소화.
+      # change_penalty    : 전진↔후진 방향 전환 비용. 높을수록 전환 횟수 감소.
+      # non_straight_penalty: 직선 대비 곡선 비용. 높을수록 직선 경로 선호.
+      # cost_penalty      : costmap 비용 반영 강도.
+      reverse_penalty: 2.0
+      change_penalty: 0.5
+      non_straight_penalty: 1.2
+      cost_penalty: 2.0
+
+      # ── 경로 스무딩 ────────────────────────────────────────────────────────
+      smooth_path: true
+
+      # ── 목표 도달 허용 오차 ────────────────────────────────────────────────
+      # 작을수록 정밀 주차. 단, 너무 작으면 탐색 실패 가능성 증가.
+      tolerance: 0.25                  # m
+
+      # ── 최종 진입 방향 강제 ────────────────────────────────────────────────
+      # true: RViz 에서 지정한 방향(yaw)으로 주차 공간에 정확히 진입.
+      use_final_approach_orientation: true
+
+      # ── 탐색 반경 ─────────────────────────────────────────────────────────
+      # 탐색 시작점에서 이 반경 이내 경로만 탐색. 주차 구간이 넓으면 확장.
+      max_planning_time: 5.0           # s: 이 시간 내에 경로 못 찾으면 실패
+
+# =============================================================================
+# global_costmap
+# planner_server 가 경로 계산 시 사용하는 전역 장애물 지도.
+# 정적 지도(map_server) 없이 LiDAR 실시간 장애물만으로 운용.
+# =============================================================================
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: true
+
+      # planner_server 는 global_costmap 기준으로 경로를 탐색함.
+      global_frame: utm
+      robot_base_frame: base_link
+
+      # 경로 계산 빈도는 낮아도 됨 (주차 요청 시 1회 계산).
+      update_frequency: 2.0            # Hz
+      publish_frequency: 1.0           # Hz
+
+      # 롤링 창: 로봇 중심으로 이동 (고정 원점 없음).
+      # 없으면 costmap 원점이 UTM (0,0)에 고정되어 로봇이 맵 바깥에 위치함.
+      rolling_window: true
+
+      # SmacPlannerHybrid 탐색 범위에 맞게 충분히 크게 설정.
+      # 200 m × 200 m @ 0.2 m/cell = 1000 × 1000 셀
+      width:      200                  # m
+      height:     200                  # m
+      resolution:   0.2                # m/cell
+
+      # TF 지연 허용 (local_costmap 과 동일하게 유지)
+      transform_tolerance: 0.5         # s
+
+      # 차량 footprint (microlino: 2.5 m × 1.475 m, 후륜축 중심 기준)
+      # 아래 값은 예시. CARLA 실측 후 수정 권장.
+      # robot_radius 대신 footprint 를 쓰면 좁은 주차 공간 판단이 정밀해짐.
+      robot_radius: 1.5                # m  (footprint 미설정 시 원형 근사)
+
+      # 정적 지도 없이 LiDAR 장애물 레이어만 사용
+      plugins: ["obstacle_layer", "inflation_layer"]
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: lidar_2d
+        lidar_2d:
+          topic: /carla/car/lidar_2d/point_cloud
+          data_type: PointCloud2
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          clearing: true
+          marking: true
+          raytrace_max_range: 18.0
+          obstacle_max_range: 15.0
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # local_costmap 과 동일한 팽창 반경 유지
+        inflation_radius: 1.5          # m
+        cost_scaling_factor: 3.0
+
+      always_send_full_costmap: false  # global_costmap 은 트래픽 절약
