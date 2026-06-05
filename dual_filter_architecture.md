@@ -3016,6 +3016,38 @@ costmap 크기를 2배로 키우면 격자 수는 4배로 늘어난다. OpenMP �
 
 ---
 
+#### ObstacleLayer 갱신 방식 — 실시간 반영 vs. 잔류
+
+파일: `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml`
+경로: `local_costmap.local_costmap.ros__parameters.obstacle_layer.lidar_2d` (global_costmap 동일 구조)
+
+관련 파라미터:
+
+| 파라미터 | 현재값 | 역할 |
+| :--- | :---: | :--- |
+| `marking` | `true` | LiDAR 포인트 위치를 장애물로 기록 |
+| `clearing` | `true` | 센서→포인트 광선 경로를 빈 공간으로 클리어 |
+| `raytrace_max_range` | 18.0 m | 레이캐스팅이 적용되는 최대 거리 |
+| `obstacle_max_range` | 15.0 m | 장애물로 마킹하는 최대 거리 |
+
+ObstacleLayer는 매 LiDAR 스캔마다 두 작업을 동시에 수행한다.
+
+**① marking** — LiDAR 포인트가 찍힌 셀을 `LETHAL_OBSTACLE`로 마킹한다.
+
+**② clearing (레이캐스팅)** — 센서 원점에서 각 포인트까지 광선을 쏘아, 광선이 지나간 경로의 셀을 `FREE_SPACE`로 지운다.
+
+| 상황 | 동작 |
+| :--- | :--- |
+| 현재 LiDAR FOV 안의 장애물 | 매 스캔마다 실시간 갱신 (marking + clearing 동시 적용) |
+| LiDAR FOV 밖으로 사라진 장애물 | **costmap에 그대로 남음** — 레이캐스팅이 닿지 않으므로 이전 마킹이 유지됨 |
+| `rolling_window` 범위를 벗어난 셀 | 창이 이동하면서 자동 소멸 |
+
+현재 설정(`raytrace_max_range: 18.0 m`)에서 차량 전방 18 m 이내는 레이캐스팅으로 적극적으로 클리어된다. 그 너머이거나 차량 뒤쪽은 이전 스캔의 장애물 마킹이 잔류한다.
+
+이 방식이 의도적인 이유는, 장애물이 순간 FOV를 벗어났다고 해서 costmap에서 즉시 사라지면 MPPI가 실제로 존재하는 물체 쪽으로 경로를 계획하는 문제가 생기기 때문이다. rolling_window가 이동하면서 잔류 마킹이 점차 자연스럽게 소멸된다.
+
+---
+
 ### 13.5 현재 설정의 종합적 의도
 
 현재 파라미터 설정은 다음 세 가지 목표의 균형을 노린다:
