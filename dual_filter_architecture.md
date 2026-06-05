@@ -29,7 +29,7 @@
 
 *   **Target OS / Middleware:** Ubuntu 22.04 / ROS 2 Humble
 *   **Target Package:** `robot_localization`
-*   **Sensor Inputs:** CARLA Vehicle API (→ `/odometry/wheel`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
+*   **Sensor Inputs:** CARLA Vehicle API (→ `/carla/car/wheel_encoder/data`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
 *   **Controller:** MPPI
 
 ### 1.1 활용 가능한 CARLA 센서 토픽
@@ -208,7 +208,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 
 | 출처 | CARLA 원본 토픽 | EKF 입력 토픽 | 메시지 타입 | 필수 데이터 필드 |
 | :--- | :--- | :--- | :--- | :--- |
-| **CARLA API 노드** (별도 작성) | — | `/odometry/wheel` | `nav_msgs/Odometry` | `twist.twist.linear.x`, `twist.twist.linear.y = 0` |
+| **`ros2_sensor.py`** (`vehicle.get_velocity()` CARLA 물리 엔진 ground truth) | `/carla/car/wheel_encoder/data` | `/wheel_encoder/data` | `nav_msgs/Odometry` | `twist.twist.linear.x`, `twist.twist.linear.y = 0` |
 | **IMU** | `/carla/car/imu/data` | `/imu/data` (리매핑) | `sensor_msgs/Imu` | `angular_velocity.z` |
 | **GNSS (후륜축)** | `/carla/car/f9r/fix` | `/f9r/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
 | **GNSS (전방 1.4m)** | `/carla/car/f9p/fix` | `/f9p/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
@@ -220,9 +220,9 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | 토픽 | 메시지 타입 | 사용하는 필드 | 사용 노드 | 목적 |
 | :--- | :--- | :--- | :--- | :--- |
 | `/clock` | `rosgraph_msgs/Clock` | `clock` | 모든 `use_sim_time:=true` 노드 | CARLA simulation time 기준으로 EKF 적분 시간 통일 |
-| `/odometry/wheel` | `nav_msgs/Odometry` | `header.stamp` | local/global EKF | wheel 측정 시각 |
-| `/odometry/wheel` | `nav_msgs/Odometry` | `twist.twist.linear.x` | local/global EKF | 차량 전방 속도 `vx` |
-| `/odometry/wheel` | `nav_msgs/Odometry` | `twist.twist.linear.y = 0` | local/global EKF | 비홀로노믹 제약, 옆미끄럼 없음 `vy=0` |
+| `/wheel_encoder/data` | `nav_msgs/Odometry` | `header.stamp` | local/global EKF | wheel 측정 시각 |
+| `/wheel_encoder/data` | `nav_msgs/Odometry` | `twist.twist.linear.x` | local/global EKF | 차량 전방 속도 `vx` |
+| `/wheel_encoder/data` | `nav_msgs/Odometry` | `twist.twist.linear.y = 0` | local/global EKF | 비홀로노믹 제약, 옆미끄럼 없음 `vy=0` |
 | `/carla/car/imu/data` | `sensor_msgs/Imu` | `header.stamp` | local/global EKF | IMU 측정 시각 |
 | `/carla/car/imu/data` | `sensor_msgs/Imu` | `angular_velocity.z` | local/global EKF | yaw rate `wz` |
 | `/carla/car/f9r/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9r_to_utm`, `azimuth_angle_calculator` | 후륜축 GNSS 위치와 heading 기준점 |
@@ -237,7 +237,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
 ```
 
-따라서 `/odometry/wheel`에서 `vx`, `vy`만 사용한다는 것은 7번째와 8번째 항목이 `true`라는 뜻이고, `/imu/data`에서 `angular_velocity.z`만 사용한다는 것은 `vyaw` 항목만 `true`라는 뜻이다.
+따라서 `/wheel_encoder/data`에서 `vx`, `vy`만 사용한다는 것은 7번째와 8번째 항목이 `true`라는 뜻이고, `/imu/data`에서 `angular_velocity.z`만 사용한다는 것은 `vyaw` 항목만 `true`라는 뜻이다.
 
 ---
 
@@ -277,7 +277,7 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 ### Node 2: 로컬 필터 (`ekf_node` - Local)
 
 *   **목적:** 차량의 제어기(MPPI)에 넣을 **지연 없고 연속적인 short-term 오도메트리** 생성.
-*   **입력:** `/odometry/wheel`, `/imu/data`
+*   **입력:** `/wheel_encoder/data`, `/imu/data`
 *   **출력:** `/odometry/local` 토픽, `odom` $\rightarrow$ `base_link` TF 발행
 *   **좌표계 역할:** `odom` 프레임 안에서 `base_link`가 얼마나 부드럽게 움직였는지를 표현한다. 전역 절대 위치가 아니라, 출발 이후의 상대 이동량을 누적한 로컬 추정값이다.
 
@@ -285,13 +285,13 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 
 | 입력 토픽 | 사용하는 필드 | EKF config 항목 | 역할 |
 | :--- | :--- | :--- | :--- |
-| `/odometry/wheel` | `header.stamp` | — | wheel 속도 측정 시각. 반드시 CARLA simulation time이어야 함 |
-| `/odometry/wheel` | `twist.twist.linear.x` | `vx` | 차량 전방 속도. 로컬 위치 적분의 주 이동량 |
-| `/odometry/wheel` | `twist.twist.linear.y = 0` | `vy` | 차량은 옆으로 미끄러지지 않는다는 비홀로노믹 제약 |
+| `/wheel_encoder/data` | `header.stamp` | — | wheel 속도 측정 시각. 반드시 CARLA simulation time이어야 함 |
+| `/wheel_encoder/data` | `twist.twist.linear.x` | `vx` | 차량 전방 속도. 로컬 위치 적분의 주 이동량 |
+| `/wheel_encoder/data` | `twist.twist.linear.y = 0` | `vy` | 차량은 옆으로 미끄러지지 않는다는 비홀로노믹 제약 |
 | `/carla/car/imu/data` → `/imu/data` | `header.stamp` | — | IMU 측정 시각. wheel odom과 같은 `/clock` 기준이어야 함 |
 | `/carla/car/imu/data` → `/imu/data` | `angular_velocity.z` | `vyaw` | 차량의 상대 yaw rate. 회전 적분의 유일한 각속도 입력 |
 
-`/odometry/wheel`의 pose, `/odometry/wheel.twist.twist.angular.z`, IMU orientation, IMU linear acceleration은 로컬 EKF에서 사용하지 않는다. 로컬 회전량은 오직 `/imu/data.angular_velocity.z`에서 오며, 선속도는 오직 `/odometry/wheel.twist.twist.linear.x`와 `linear.y=0` 제약에서 온다.
+`/wheel_encoder/data`의 pose, `/wheel_encoder/data.twist.twist.angular.z`, IMU orientation, IMU linear acceleration은 로컬 EKF에서 사용하지 않는다. 로컬 회전량은 오직 `/imu/data.angular_velocity.z`에서 오며, 선속도는 오직 `/wheel_encoder/data.twist.twist.linear.x`와 `linear.y=0` 제약에서 온다.
 
 #### EKF 파라미터의 의미
 
@@ -304,7 +304,7 @@ local_ekf:
     world_frame: odom
     publish_tf: true
 
-    odom0: /odometry/wheel
+    odom0: /wheel_encoder/data
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -319,7 +319,7 @@ local_ekf:
                   false, false, false]
 ```
 
-`odom0_config`에서 `vx`, `vy`만 `true`이므로 `/odometry/wheel`은 위치가 아니라 속도 측정으로만 쓰인다. `imu0_config`에서 `vyaw`만 `true`이므로 IMU는 yaw rate 측정으로만 쓰인다. `world_frame: odom`과 `publish_tf: true` 때문에 로컬 EKF는 `/odometry/local`과 함께 `odom → base_link` TF를 발행한다.
+`odom0_config`에서 `vx`, `vy`만 `true`이므로 `/wheel_encoder/data`은 위치가 아니라 속도 측정으로만 쓰인다. `imu0_config`에서 `vyaw`만 `true`이므로 IMU는 yaw rate 측정으로만 쓰인다. `world_frame: odom`과 `publish_tf: true` 때문에 로컬 EKF는 `/odometry/local`과 함께 `odom → base_link` TF를 발행한다.
 
 #### 로컬 EKF가 계산하는 움직임
 
@@ -422,13 +422,13 @@ GNSS 위치가 순간적으로 1m 튐
 | :--- | :--- | :--- |
 | `/clock` 미사용 또는 stamp 불일치 | 90도 회전이 유턴처럼 과적분됨 | 속도는 simulation second 기준인데 EKF 적분 `dt`가 wall time으로 계산됨 |
 | CARLA/ROS yaw 부호 불일치 | 좌회전/우회전 방향이 뒤집힘 | CARLA `+Y=right`, ROS `+Y=left` 미러링 누락 |
-| `/odometry/wheel.angular.z`와 IMU `angular_velocity.z` 동시 사용 | 회전량이 과하게 들어감 | yaw rate를 두 센서에서 중복 융합 |
+| `/wheel_encoder/data.angular.z`와 IMU `angular_velocity.z` 동시 사용 | 회전량이 과하게 들어감 | yaw rate를 두 센서에서 중복 융합 |
 | `vy=0` 제약 미사용 | 코너에서 옆으로 미끄러지는 궤적 | 차량 비홀로노믹 특성이 EKF에 반영되지 않음 |
 
 ### Node 3: 글로벌 필터 (`ekf_node` - Global)
 
 *   **목적:** GNSS 절대 위치로 로컬 필터의 장기 드리프트를 보정하고, 맵 상의 절대 위치를 파악.
-*   **입력:** `/odometry/wheel`, `/imu/data`, `/odometry/gnss` (Node 1 출력 — UTM 위치 + azimuth yaw)
+*   **입력:** `/wheel_encoder/data`, `/imu/data`, `/odometry/gnss` (Node 1 출력 — UTM 위치 + azimuth yaw)
 *   **출력:** `/odometry/global` 토픽, `utm` $\rightarrow$ `odom` TF 발행
 
 #### 글로벌 EKF — 각 입력이 필요한 이유 (예측/보정 단계)
@@ -437,7 +437,7 @@ EKF는 **예측(Prediction)** + **보정(Correction)** 2단계로 동작한다.
 
 | 입력 | 단계 | 역할 | 없으면? |
 | :--- | :--- | :--- | :--- |
-| `/odometry/wheel(vx, vy=0)` + `/imu/data(wz)` | 예측 | GNSS 업데이트(30Hz) 사이 구간에서 차량 이동을 물리 모델로 추정 | GNSS가 없는 구간(1/30초)마다 위치를 전혀 모름 |
+| `/wheel_encoder/data(vx, vy=0)` + `/imu/data(wz)` | 예측 | GNSS 업데이트(30Hz) 사이 구간에서 차량 이동을 물리 모델로 추정 | GNSS가 없는 구간(1/30초)마다 위치를 전혀 모름 |
 | `/odometry/gnss` (UTM x, y) | 보정 | 절대 위치로 누적된 드리프트를 보정 | 예측만 하고 보정이 없으므로 로컬 EKF와 동일하게 드리프트 누적 |
 | `/odometry/gnss` (azimuth yaw) | 보정 | 절대 헤딩으로 방향 드리프트를 보정 | 위치는 보정되지만 헤딩 오차가 남아, GNSS 업데이트마다 필터가 진동 |
 
@@ -471,7 +471,7 @@ odom1_config: [true,  true,  false,
   robot_localization이 quaternion에서 yaw 추출
 ```
 
-global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해서다. `/odometry/wheel(vx, vy=0)`와 `/imu/data(wz)`만 있으면 global EKF도 local EKF처럼 상대 적분만 수행한다. 위치 x, y를 GNSS로 보정하더라도 yaw가 틀어져 있으면 다음 예측 단계에서 진행 방향이 잘못되어 위치 보정과 예측이 서로 싸우게 된다. 특히 코너 구간에서는 GNSS 위치 업데이트마다 경로가 흔들리거나, `utm→odom` 보정이 불안정해질 수 있다. dual GNSS yaw를 함께 넣으면 위치와 방향이 같은 절대 좌표계에서 동시에 보정된다.
+global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해서다. `/wheel_encoder/data(vx, vy=0)`와 `/imu/data(wz)`만 있으면 global EKF도 local EKF처럼 상대 적분만 수행한다. 위치 x, y를 GNSS로 보정하더라도 yaw가 틀어져 있으면 다음 예측 단계에서 진행 방향이 잘못되어 위치 보정과 예측이 서로 싸우게 된다. 특히 코너 구간에서는 GNSS 위치 업데이트마다 경로가 흔들리거나, `utm→odom` 보정이 불안정해질 수 있다. dual GNSS yaw를 함께 넣으면 위치와 방향이 같은 절대 좌표계에서 동시에 보정된다.
 
 #### `/azimuth_angle`을 `pose.pose.orientation` yaw 대신 직접 쓸 수 있는가
 
@@ -558,7 +558,7 @@ local_ekf:
     world_frame: odom              # 기준 프레임을 odom으로 설정
 
     # Wheel Encoder 설정 (X축 선속도 + Y축 비홀로노믹 제약 vy=0)
-    odom0: /odometry/wheel
+    odom0: /wheel_encoder/data
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -594,7 +594,7 @@ global_ekf:
     base_link_frame: base_link
     world_frame: utm               # 기준 프레임을 utm으로 설정
 
-    odom0: /odometry/wheel
+    odom0: /wheel_encoder/data
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -699,7 +699,7 @@ mppi_ws/
 
 파일: `ros2_sensor/ros2_sensor.py`
 
-이 노드는 CARLA 센서 데이터를 ROS 2 토픽으로 발행하고, EKF 입력에 필요한 `/odometry/wheel`과 `/clock`도 함께 만든다.
+이 노드는 CARLA 센서 데이터를 ROS 2 토픽으로 발행하고, EKF 입력에 필요한 `/carla/car/wheel_encoder/data`과 `/clock`도 함께 만든다.
 
 #### `/clock`
 
@@ -712,7 +712,7 @@ mppi_ws/
 
 CARLA synchronous/passive 환경에서는 simulation time과 wall time이 다를 수 있다. 이때 속도는 simulation second 기준인데 EKF가 wall time으로 적분하면 회전과 이동량이 과적분된다. 따라서 `/clock`을 발행하고 EKF, path publisher, RViz를 `use_sim_time:=true`로 실행한다.
 
-#### `/odometry/wheel`
+#### `/carla/car/wheel_encoder/data`
 
 | 필드 | 값 | EKF 사용 여부 |
 | :--- | :--- | :--- |
@@ -723,7 +723,7 @@ CARLA synchronous/passive 환경에서는 simulation time과 wall time이 다를
 | `twist.twist.linear.y` | `0.0` | 사용, 비홀로노믹 제약 |
 | `twist.twist.angular.z` | 발행하지 않음 | 사용 안 함 |
 
-`twist.covariance[0] = 0.05`로 `vx` 신뢰도를 지정하고, `twist.covariance[7] = 0.01`로 `vy=0` 제약을 비교적 강하게 준다. yaw-rate는 IMU에서만 사용하므로 `/odometry/wheel`의 angular 축 covariance는 크게 둔다.
+`twist.covariance[0] = 0.05`로 `vx` 신뢰도를 지정하고, `twist.covariance[7] = 0.01`로 `vy=0` 제약을 비교적 강하게 준다. yaw-rate는 IMU에서만 사용하므로 `/wheel_encoder/data`의 angular 축 covariance는 크게 둔다.
 
 #### `/carla/car/imu/data`
 
@@ -749,8 +749,10 @@ CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=u
 | `global_ekf` | `/imu/data` | `/carla/car/imu/data` | `remappings=` |
 | `local_ekf` | `odometry/filtered` | `/odometry/local` | `remappings=` |
 | `global_ekf` | `odometry/filtered` | `/odometry/global` | `remappings=` |
+| `local_ekf` | `/wheel_encoder/data` | `/carla/car/wheel_encoder/data` | `remappings=` |
+| `global_ekf` | `/wheel_encoder/data` | `/carla/car/wheel_encoder/data` | `remappings=` |
 
-> **`/odometry/wheel`** 은 `ros2_sensor.py`가 직접 `/odometry/wheel`으로 발행하므로 리매핑 불필요.
+> **`/carla/car/wheel_encoder/data` → `/wheel_encoder/data`**: `ros2_sensor.py`가 `/carla/car/wheel_encoder/data`로 발행하고, `local_ekf` / `global_ekf` 노드의 `remappings=`에서 `/wheel_encoder/data` → `/carla/car/wheel_encoder/data`로 연결한다. EKF yaml의 `odom0: /wheel_encoder/data`가 내부 토픽명 역할을 한다.
 > 이 토픽은 **전진 선속도 + 비홀로노믹 제약 입력**으로 사용한다. `twist.twist.angular.z`는 `/imu/data.angular_velocity.z`와 중복되므로 EKF에서 사용하지 않으며, `ros2_sensor.py`에서도 yaw-rate covariance를 크게 설정해 회전 입력으로 선택되지 않게 한다.
 > `header.stamp`는 ROS wall time이 아니라 CARLA simulation timestamp를 사용한다. `/imu/data`, `/odometry/gnss`도 같은 시간 기준을 사용해야 local/global EKF가 속도를 올바른 시간 간격으로 적분한다.
 > 따라서 `ros2_sensor.py`는 `/clock`을 발행하고, dual filter launch의 모든 노드는 `use_sim_time:=true`로 실행한다.
@@ -944,7 +946,7 @@ odom_topic
 | 후보 topic | `odom_topic` 사용 가능? | 장점 | 문제점 | 판단 |
 | :--- | :--- | :--- | :--- | :--- |
 | `/odometry/local` | 가능 | wheel `vx`, `vy=0`, IMU `wz`가 융합된 연속적 twist. GNSS jump 없음 | 장기 위치 drift는 있지만 MPPI의 현재 속도 입력에는 큰 문제 없음 | **권장** |
-| `/odometry/wheel` | 부분 가능 | 전방 속도 `linear.x`가 직접적이고 지연이 작음 | yaw rate를 쓰지 않도록 만든 topic이라 `angular.z`가 부정확하거나 0이 될 수 있음 | 비권장 |
+| `/wheel_encoder/data` | 부분 가능 | 전방 속도 `linear.x`가 직접적이고 지연이 작음 | yaw rate를 쓰지 않도록 만든 topic이라 `angular.z`가 부정확하거나 0이 될 수 있음 | 비권장 |
 | `/odometry/global` | 가능은 함 | global EKF 융합 결과 | GNSS 보정 영향이 섞이며 제어용 현재 속도에는 불필요 | 비권장 |
 | `/odometry/gnss` | 부적합 | 절대 위치와 dual GNSS yaw가 있음 | `gnss_to_odom`는 pose 브리지이며 twist를 제공하지 않음 | 사용 금지 |
 
@@ -958,7 +960,7 @@ controller_server:
     odom_duration: 0.3
 ```
 
-`/odometry/local`은 `/odometry/wheel.twist.twist.linear.x`, `linear.y=0`, `/imu/data.angular_velocity.z`를 EKF로 융합하므로 MPPI의 `robot_speed` 입력으로 가장 안정적이다. 또한 `/odometry/local`은 GNSS 보정을 받지 않으므로 제어 루프에 GNSS jump를 전달하지 않는다.
+`/odometry/local`은 `/wheel_encoder/data.twist.twist.linear.x`, `linear.y=0`, `/imu/data.angular_velocity.z`를 EKF로 융합하므로 MPPI의 `robot_speed` 입력으로 가장 안정적이다. 또한 `/odometry/local`은 GNSS 보정을 받지 않으므로 제어 루프에 GNSS jump를 전달하지 않는다.
 
 ### 8.4 Pose와 TF 요구사항
 
@@ -1091,7 +1093,7 @@ MPPI output
 
 ## 9. 실제 하드웨어 휠 오도메트리 구현
 
-CARLA 시뮬레이션에서는 `ros2_sensor.py`가 `/odometry/wheel`을 직접 발행한다(Section 6.3). 실제 하드웨어에서는 이 역할을 `serial_bridge` 노드가 대신한다. 아두이노가 전륜 엔코더와 POT 조향각 센서 데이터를 시리얼로 전송하고, `serial_bridge`가 이를 파싱하여 자전거 모델 보정을 적용한 뒤 `/odometry/wheel`으로 발행한다.
+CARLA 시뮬레이션에서는 `ros2_sensor.py`가 `/carla/car/wheel_encoder/data`를 발행하고 launch 파일 리매핑으로 EKF의 `/wheel_encoder/data`에 연결한다(Section 6.3). 실제 하드웨어에서는 `serial_bridge` 노드가 아두이노 시리얼에서 전륜 엔코더(VX)와 조향각(PS)을 파싱하여 자전거 모델 보정을 적용한 뒤 직접 `/wheel_encoder/data`로 발행한다.
 
 ### 9.1 전륜 엔코더와 조향각 보정의 필요성
 
@@ -1181,7 +1183,7 @@ void encoderISR() {
 | :--- | :--- |
 | `/auto_throttle` → 아두이노 | Float32 수신 → `TH <val>\n` 시리얼 전송 |
 | `/auto_steer_angle` → 아두이노 | Float32 수신 → `SA <val>\n` 시리얼 전송 |
-| 아두이노 → `/odometry/wheel` | 시리얼 수신 → VX/PS 파싱 → 보정 → Odometry 발행 |
+| 아두이노 → `/wheel_encoder/data` | 시리얼 수신 → VX/PS 파싱 → 보정 → Odometry 발행 |
 
 #### 핵심 처리 흐름
 
@@ -1196,8 +1198,8 @@ void encoderISR() {
          = 0.5123 × 0.9892
          = 0.5068 m/s
          ↓
-  /odometry/wheel.twist.twist.linear.x = 0.5068
-  /odometry/wheel.twist.twist.linear.y = 0.0   (비홀로노믹 제약)
+  /wheel_encoder/data.twist.twist.linear.x = 0.5068
+  /wheel_encoder/data.twist.twist.linear.y = 0.0   (비홀로노믹 제약)
          ↓
   local_ekf / global_ekf odom0 입력
 ```
@@ -1233,7 +1235,7 @@ serial_bridge:
     startup_silence_sec: 3.0    # 시작 직후 아두이노 초기화 동안 송신 차단
 ```
 
-### 9.4 CARLA 시뮬레이션과 실제 하드웨어의 `/odometry/wheel` 비교
+### 9.4 CARLA 시뮬레이션과 실제 하드웨어의 `/wheel_encoder/data` 비교
 
 | 항목 | CARLA 시뮬레이션 (ros2_sensor.py) | 실제 하드웨어 (serial_bridge) |
 | :--- | :--- | :--- |
@@ -1293,7 +1295,7 @@ ros2 run serial_bridge serial_bridge
 | 항목 | 상태 | 비고 |
 | :--- | :---: | :--- |
 | `/clock` 발행 | ✅ | `ros2_sensor.py`: CARLA simulation time |
-| `/odometry/wheel` 발행 | ✅ | `ros2_sensor.py`: vx, vy=0, sim time stamp, covariance 설정 |
+| `/wheel_encoder/data` 발행 | ✅ | `ros2_sensor.py`: vx, vy=0, sim time stamp, covariance 설정 |
 | `/carla/car/imu/data` 발행 | ✅ | `ros2_sensor.py`: `angular_velocity.z` CARLA→ROS 부호 반전 |
 | `/carla/car/f9r/fix`, `/f9p/fix` 발행 | ✅ | `ros2_sensor.py` |
 | `gnss_to_utm` 소스 구현 | ✅ | `f9r_to_utm`, `f9p_to_utm`, `azimuth_angle_calculator`, `csv_to_utm` |
@@ -2012,7 +2014,7 @@ ros2 param get /local_ekf use_sim_time
 ros2 param get /global_ekf use_sim_time
 
 # 주요 입력 stamp가 /clock과 동일한지 확인
-ros2 topic echo --once /odometry/wheel --field header.stamp
+ros2 topic echo --once /wheel_encoder/data --field header.stamp
 ros2 topic echo --once /carla/car/imu/data --field header.stamp
 ros2 topic echo --once /odometry/local --field header.stamp
 ros2 topic echo --once /odometry/global --field header.stamp
@@ -2021,7 +2023,7 @@ ros2 topic echo --once /odometry/global --field header.stamp
 ros2 run tf2_tools view_frames
 
 # wheel / IMU 입력 확인
-ros2 topic echo --once /odometry/wheel --field twist.twist.linear
+ros2 topic echo --once /wheel_encoder/data --field twist.twist.linear
 ros2 topic echo --once /carla/car/imu/data --field angular_velocity
 
 # 로컬 EKF 출력 (MPPI 제어 입력용 — GNSS jump 없이 부드러워야 함)
@@ -2104,7 +2106,7 @@ CARLA Simulator
   │                                                           │         │
   ├─ /carla/car/imu/data ─────────────────────────────────────┼─────────┼──┐
   │                                                           │         │  │
-  └─ ros2_sensor.py ──→ /odometry/wheel ─────────────────────┼─────────┼──┤
+  └─ ros2_sensor.py ──→ /carla/car/wheel_encoder/data ───┼─────────┼──┤
                                 │                             │         │  │
                                 └─────────────┬──────────────┘         │  │
                                               │                    csv_to_utm
@@ -3318,7 +3320,7 @@ global_ekf:
 
 | 센서 토픽 | 발행 프레임 | EKF 기대 프레임 | TF 조회 필요 여부 |
 | :--- | :---: | :---: | :---: |
-| `/odometry/wheel` | `base_link` | `base_link` | ❌ 불필요 |
+| `/wheel_encoder/data` | `base_link` | `base_link` | ❌ 불필요 |
 | `/imu/data` | `base_link` | `base_link` | ❌ 불필요 |
 | `/odometry/gnss` | `utm` | `utm` (world_frame) | ❌ 불필요 |
 

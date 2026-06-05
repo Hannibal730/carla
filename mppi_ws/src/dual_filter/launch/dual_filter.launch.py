@@ -10,7 +10,7 @@ Topic remappings:
   /carla/car/f9p/fix           →  /f9p/fix           (f9p_to_utm)
 
 Prerequisites:
-  - ros2_sensor.py running with --python-ros2 flag  (publishes /odometry/wheel)
+  - ros2_sensor.py running with --python-ros2 flag  (publishes /carla/car/wheel_encoder/data)
   - sudo apt install ros-humble-robot-localization
 """
 import os
@@ -88,6 +88,7 @@ def generate_launch_description():
         remappings=[
             ('/imu/data', '/carla/car/imu/data'),
             ('odometry/filtered', '/odometry/local'),
+            ('/wheel_encoder/data', '/carla/car/wheel_encoder/data'),
         ],
     )
 
@@ -104,6 +105,7 @@ def generate_launch_description():
         remappings=[
             ('/imu/data', '/carla/car/imu/data'),
             ('odometry/filtered', '/odometry/global'),
+            ('/wheel_encoder/data', '/carla/car/wheel_encoder/data'),
         ],
     )
 

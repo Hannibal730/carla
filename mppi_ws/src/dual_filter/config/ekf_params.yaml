@@ -9,7 +9,7 @@
 
 # -----------------------------------------------------------------------------
 # Node 1: Local EKF  —  smooth, GNSS-free odometry for MPPI controller
-#   Inputs : /odometry/wheel (vx, vy=0)  +  /imu/data (wz)
+#   Inputs : /wheel_encoder/data (vx, vy=0)  +  /imu/data (wz)
 #   Output : /odometry/local  +  odom → base_link TF
 # -----------------------------------------------------------------------------
 local_ekf:
@@ -24,9 +24,9 @@ local_ekf:
     base_link_frame: base_link
     world_frame:     odom        # local EKF lives in odom frame
 
-    # /odometry/wheel  — vx (linear.x) + non-holonomic vy=0 constraint
+    # /wheel_encoder/data  — vx (linear.x) + non-holonomic vy=0 constraint
     # config: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    odom0: /odometry/wheel
+    odom0: /wheel_encoder/data
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,
@@ -53,7 +53,7 @@ local_ekf:
 
 # -----------------------------------------------------------------------------
 # Node 3: Global EKF  —  GNSS drift correction, absolute position for path tracking
-#   Inputs : /odometry/wheel (vx, vy=0)  +  /imu/data (wz)  +  /odometry/gnss (x, y, yaw)
+#   Inputs : /wheel_encoder/data (vx, vy=0)  +  /imu/data (wz)  +  /odometry/gnss (x, y, yaw)
 #   Output : /odometry/global  +  utm → odom TF
 # -----------------------------------------------------------------------------
 global_ekf:
@@ -68,8 +68,8 @@ global_ekf:
     base_link_frame: base_link
     world_frame:     utm         # global EKF lives in utm frame → publishes utm→odom TF
 
-    # /odometry/wheel  — vx (linear.x) + non-holonomic vy=0 constraint
-    odom0: /odometry/wheel
+    # /wheel_encoder/data  — vx (linear.x) + non-holonomic vy=0 constraint
+    odom0: /wheel_encoder/data
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  true,  false,

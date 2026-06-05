@@ -35,6 +35,7 @@ class PathVisualizer(Node):
 
         self.create_subscription(Odometry, odom_topic, self._cb, 10)
         self._pub = self.create_publisher(Path, path_topic, 10)
+        self.create_timer(0.1, self._publish)  # 10 Hz
         self.get_logger().info(
             f'path_visualizer: {odom_topic} → {path_topic}  max_poses={max_poses}')
 
@@ -42,12 +43,13 @@ class PathVisualizer(Node):
         pose = PoseStamped()
         pose.header = msg.header
         pose.pose = msg.pose.pose
-
         self._deque.append(pose)
-
         self._path.header.stamp = msg.header.stamp
         self._path.poses = list(self._deque)
-        self._pub.publish(self._path)
+
+    def _publish(self) -> None:
+        if self._deque:
+            self._pub.publish(self._path)
 
 
 def main(args=None):

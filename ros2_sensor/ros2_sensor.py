@@ -220,7 +220,7 @@ class PythonRos2Publisher:
 
         if vehicle is not None:
             self._wheel_odom_pub = self.node.create_publisher(
-                Odometry, '/odometry/wheel', self._ekf_qos)
+                Odometry, '/carla/car/wheel_encoder/data', self._ekf_qos)
             self.node.create_timer(1.0 / 20.0, self._publish_wheel_odom)
 
     def _now(self):
@@ -491,7 +491,7 @@ class PythonRos2Publisher:
         msg.twist.twist.linear.x = vx
         msg.twist.twist.linear.y = 0.0
 
-        # /odometry/wheel supplies planar wheel constraints: forward speed and the
+        # /carla/car/wheel_encoder/data supplies planar wheel constraints: forward speed and the
         # non-holonomic side-slip constraint (vy ~= 0). Yaw-rate is supplied by
         # /imu/data.angular_velocity.z, so mark angular axes as unusable here.
         twist_cov = [0.0] * 36

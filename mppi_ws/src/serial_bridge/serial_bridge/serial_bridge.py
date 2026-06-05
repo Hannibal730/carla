@@ -51,9 +51,9 @@ class SerialBridge(Node):
 
         # 발행자 (아두이노 → ROS2 오도메트리)
         # 아두이노 시리얼에서 VX(전륜 선속도)와 PS(실제 조향각)를 파싱하여
-        # v_rear = VX × cos(PS × π/180) 로 보정한 뒤 /odometry/wheel 로 발행한다.
+        # v_rear = VX × cos(PS × π/180) 로 보정한 뒤 /wheel_encoder/data 로 발행한다.
         # 이 토픽은 local_ekf / global_ekf 의 odom0 입력으로 사용된다.
-        self._odom_pub = self.create_publisher(Odometry, '/odometry/wheel', 10)
+        self._odom_pub = self.create_publisher(Odometry, '/wheel_encoder/data', 10)
 
         self.get_logger().info(
             f"Subscribed to {throttle_topic} and {steer_topic} → Serial({port}@{baud}), "
@@ -103,13 +103,13 @@ class SerialBridge(Node):
     def _publish_wheel_odom(self, vx_raw: float, ps_deg: float):
         """
         전륜 엔코더 선속도(vx_raw)와 실제 조향각(ps_deg)으로
-        후륜축 기준 선속도를 계산하여 /odometry/wheel 을 발행한다.
+        후륜축 기준 선속도를 계산하여 /wheel_encoder/data 을 발행한다.
 
         보정 공식 (자전거 모델):
             v_encoder = v_rear / cos(δ)
             ∴ v_rear  = v_encoder × cos(δ)
 
-        /odometry/wheel 은 EKF 의 속도 측정 입력(vx, vy=0)으로만 사용된다.
+        /wheel_encoder/data 은 EKF 의 속도 측정 입력(vx, vy=0)으로만 사용된다.
         pose 필드는 EKF 가 내부적으로 적분하므로 여기서는 채우지 않는다.
         """
         v_rear = vx_raw * math.cos(math.radians(ps_deg))
@@ -160,7 +160,7 @@ class SerialBridge(Node):
 
                     self.get_logger().debug(f"RX: {text}")
 
-                    # VX, PS 가 모두 포함된 줄이면 /odometry/wheel 발행
+                    # VX, PS 가 모두 포함된 줄이면 /wheel_encoder/data 발행
                     vx = self._parse_field(text, 'VX')
                     ps = self._parse_field(text, 'PS')
                     if vx is not None and ps is not None:
