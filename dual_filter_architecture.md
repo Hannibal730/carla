@@ -1,6 +1,38 @@
 # ROS 2 Humble: 자율주행 듀얼 필터(Dual Filter) 기반 센서 퓨전 아키텍처 구축 매뉴얼
 
-내가 사용 가능한 ros2 topic은 다음과 같다.
+---
+
+## 목차
+
+| 섹션 | 제목 |
+| :---: | :--- |
+| [1](#1-시스템-개요-system-overview) | 시스템 개요 |
+| [2](#2-좌표계tf-tree-명세-rep-105-준수) | 좌표계(TF Tree) 명세 |
+| [3](#3-센서-토픽-및-메시지-타입-명세) | 센서 토픽 및 메시지 타입 명세 |
+| [4](#4-노드별-파라미터-및-아키텍처-설계) | 노드별 파라미터 및 아키텍처 설계 |
+| [5](#5-yaml-파라미터-파일-템플릿-ekf_paramsyaml) | YAML 파라미터 파일 템플릿 |
+| [6](#6-구현-결과-implementation) | 구현 결과 |
+| [**7**](#7-빌드-및-의존성-설치) | **빌드 및 의존성 설치** |
+| [8](#8-nav2-mppi-controller-연동-분석) | Nav2 MPPI Controller 연동 분석 |
+| [9](#9-실제-하드웨어-휠-오도메트리-구현) | 실제 하드웨어 휠 오도메트리 구현 |
+| [10](#10-구현-컴포넌트-상세) | 구현 컴포넌트 상세 |
+| [11](#11-레퍼런스-맵-제작-mppi-추종-경로-생성) | 레퍼런스 맵 제작 |
+| [12](#12-시스템-실행-매뉴얼) | 시스템 실행 매뉴얼 |
+| [13](#13-파라미터-상세-설명-및-튜닝-가이드) | 파라미터 상세 설명 및 튜닝 가이드 |
+| [14](#14-tf-시간적-허용-오차-tf-temporal-tolerance) | TF 시간적 허용 오차 |
+
+---
+
+## 1. 시스템 개요 (System Overview)
+
+본 매뉴얼은 실외 자율주행 차량의 정밀 측위 및 제어 안정성 확보를 위해 **REP-105 표준**을 준수하는 듀얼 필터(Dual Filter) 아키텍처를 구축하는 지침이다. 단일 필터에 GNSS를 결합할 경우 발생하는 위치 도약(Jump) 현상으로 인한 제어기 발산을 방지하기 위해 로컬 필터와 글로벌 필터를 분리하여 구성한다.
+
+*   **Target OS / Middleware:** Ubuntu 22.04 / ROS 2 Humble
+*   **Target Package:** `robot_localization`
+*   **Sensor Inputs:** CARLA Vehicle API (→ `/odometry/wheel`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
+*   **Controller:** MPPI
+
+### 1.1 활용 가능한 CARLA 센서 토픽
 
 | 센서 | 토픽 | ROS2 메시지 타입 |
 | :--- | :--- | :--- |
@@ -11,15 +43,6 @@
 | GNSS (후륜축) | `/carla/car/f9r/fix` | `sensor_msgs/msg/NavSatFix` |
 | GNSS (전방 1.4m) | `/carla/car/f9p/fix` | `sensor_msgs/msg/NavSatFix` |
 | IMU | `/carla/car/imu/data` | `sensor_msgs/msg/Imu` |
-
-
-## 1. 시스템 개요 (System Overview)
-본 매뉴얼은 실외 자율주행 차량의 정밀 측위 및 제어 안정성 확보를 위해 **REP-105 표준**을 준수하는 듀얼 필터(Dual Filter) 아키텍처를 구축하는 지침이다. 단일 필터에 GNSS를 결합할 경우 발생하는 위치 도약(Jump) 현상으로 인한 제어기 발산을 방지하기 위해 로컬 필터와 글로벌 필터를 분리하여 구성한다.
-
-*   **Target OS / Middleware:** Ubuntu 22.04 / ROS 2 Humble
-*   **Target Package:** `robot_localization`
-*   **Sensor Inputs:** CARLA Vehicle API (→ `/odometry/wheel`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
-*   **Controller:** MPPI
 
 ---
 
@@ -562,7 +585,7 @@ local_ekf:
 global_ekf:
   ros__parameters:
     use_sim_time: true              # /clock(CARLA simulation time) 사용
-    frequency: 30.0
+    frequency: 50.0
     two_d_mode: true
     publish_tf: true               # utm -> odom TF 발행 활성화
     
@@ -635,7 +658,8 @@ mppi_ws/
 │       │   ├── gnss_to_odom.py        ← Node 1d: /f9r_utm + /azimuth_angle → /odometry/gnss + /utm_datum
 │       │   ├── path_visualizer.py     ← Odometry → Path 누적 발행 (3개 인스턴스)
 │       │   ├── cmd_vel_to_carla.py    ← /cmd_vel (Twist) → CARLA VehicleControl
-│       │   └── follow_path_client.py  ← /csv_path 수신 → FollowPath action goal 전송
+│       │   ├── follow_path_client.py  ← /csv_path 수신 → FollowPath action goal 전송
+│       │   └── mppi_speed_calc.py     ← MPPI 속도 계산 보조 노드
 │       ├── config/
 │       │   ├── ekf_params.yaml        ← Section 5 파라미터 (local_ekf + global_ekf)
 │       │   └── nav2_carla_params.yaml ← controller_server + MPPI + local_costmap 설정
@@ -720,7 +744,7 @@ CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=u
 | :--- | :--- | :--- | :--- |
 | `f9r_to_utm` | `/f9r/fix` | `/carla/car/f9r/fix` | `remappings=` |
 | `f9p_to_utm` | `/f9p/fix` | `/carla/car/f9p/fix` | `remappings=` |
-| `azimuth_angle_calculator` | `gnss1_topic`, `gnss2_topic` | `/carla/car/f9r/fix`, `/f9p/fix` | `parameters=` (파라미터 오버라이드) |
+| `azimuth_angle_calculator` | `gnss1_topic`, `gnss2_topic` | `/carla/car/f9r/fix`, `/carla/car/f9p/fix` | `parameters=` (파라미터 오버라이드) |
 | `local_ekf` | `/imu/data` | `/carla/car/imu/data` | `remappings=` |
 | `global_ekf` | `/imu/data` | `/carla/car/imu/data` | `remappings=` |
 | `local_ekf` | `odometry/filtered` | `/odometry/local` | `remappings=` |
@@ -753,7 +777,78 @@ CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=u
 
 ---
 
-## 8. Nav2 MPPI Controller에 필요한 전체 입력과 현재 충족 여부
+## 7. 빌드 및 의존성 설치
+
+dual_filter 스택을 실행하기 전에 아래 패키지를 설치하고 빌드한다.
+
+### 7.1 `robot_localization` 설치
+
+```bash
+sudo apt install ros-humble-robot-localization
+```
+
+### 7.2 Nav2 패키지 설치
+
+#### 방법 A — apt 설치 (권장, 빠름)
+
+```bash
+sudo apt update
+sudo apt install \
+  ros-humble-nav2-controller \
+  ros-humble-nav2-mppi-controller \
+  ros-humble-nav2-costmap-2d \
+  ros-humble-nav2-core \
+  ros-humble-nav2-util \
+  ros-humble-nav2-msgs \
+  ros-humble-nav2-bringup
+```
+
+설치 확인:
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 pkg list | grep nav2_mppi_controller
+# nav2_mppi_controller
+```
+
+#### 방법 B — 소스 빌드 (OpenMP 병렬화 활성화 시)
+
+`nav2_mppi_controller`의 OpenMP 활성화가 필요하면 소스 빌드가 필요하다.
+상세 방법은 [Section 12.7](#127-nav2_mppi_controller-openmp-빌드-연산-과다-근본-해결)을 참고한다.
+
+```bash
+cd ~/carla/navigation2
+source /opt/ros/humble/setup.bash
+
+# 의존성 설치
+rosdep install --from-paths . --ignore-src -r -y
+
+# 빌드 (시간이 오래 걸림, 별도 워크스페이스 권장)
+colcon build --packages-select \
+  nav2_msgs nav2_core nav2_util nav2_costmap_2d \
+  nav2_controller nav2_mppi_controller \
+  --symlink-install
+
+source install/setup.bash
+```
+
+### 7.3 `dual_filter` / `gnss_to_utm` 패키지 빌드
+
+```bash
+cd ~/carla/mppi_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select dual_filter gnss_to_utm --symlink-install
+source install/setup.bash
+```
+
+> **`No executable found` 오류 시**: `setup.py`에 entry point를 추가한 뒤 빌드하지 않으면
+> 발생한다. 위 명령으로 재빌드하면 `cmd_vel_to_carla`, `follow_path_client`가 등록된다.
+
+---
+
+## 8. Nav2 MPPI Controller 연동 분석
+
+> **참고**: 이 섹션은 구현 전 요구사항 분석 결과다. 구현 완료 후 실제 상태는 [Section 10.1](#101-구현-완료-현황)을 참고한다.
 
 분석 대상:
 
@@ -930,15 +1025,17 @@ CARLA 일반 차량은 lateral velocity를 독립적으로 명령할 수 없으�
 ```yaml
 FollowPath:
   plugin: "nav2_mppi_controller::MPPIController"
-  motion_model: "ackermann"
+  motion_model: "Ackermann"
   ackermann:
     plugin: "mppi::AckermannMotionModel"
-    min_turning_r: 3.0
+    min_turning_r: 3.3
 ```
+
+> **주의:** Nav2는 `motion_model` 값에 대소문자를 구분한다. `"ackermann"` (소문자)으로 설정하면 `Model ackermann is not valid!` 오류가 발생한다. 반드시 `"Ackermann"` (첫 글자 대문자)으로 설정해야 한다.
 
 ### 8.8 MPPI 주요 파라미터
 
-→ 파라미터 상세 설명 및 튜닝 가이드: [Section 10.5](#105-파라미터-상세-설명-및-튜닝-가이드)
+→ 파라미터 상세 설명 및 튜닝 가이드: [Section 13](#13-파라미터-상세-설명-및-튜닝-가이드)
 
 ### 8.9 출력 명령과 CARLA 제어 변환
 
@@ -1185,9 +1282,9 @@ ros2 run serial_bridge serial_bridge
 
 ---
 
-## 10. CARLA + MPPI 준비 상태 분석 및 실행 매뉴얼
+## 10. 구현 컴포넌트 상세
 
-### 10.1 현재 상태 요약
+### 10.1 구현 완료 현황
 
 아래 분석은 `/home/hannibal/carla/mppi_ws/` 워크스페이스의 빌드 결과물과 소스 코드를 실제로 비교하여 작성한 것이다.
 
@@ -1213,19 +1310,19 @@ ros2 run serial_bridge serial_bridge
 | :--- | :---: | :--- |
 | Nav2 패키지 설치 | ✅ | `nav2_controller`, `nav2_mppi_controller`, `nav2_costmap_2d`, `nav2_lifecycle_manager` 1.1.20 apt 설치 완료 |
 | controller_server 설정 파일 | ✅ | `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml` 작성 완료. controller_server 3계층(제어루프·MPPI플러그인·local_costmap) + 7개 critic 설정. 차량별 튜닝 필수값: `min_turning_r`, `vx_max` |
-| `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(wz·L, vx)) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
+| `cmd_vel` → CARLA 제어 변환 | ✅ | `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` 작성 완료. 자전거 모델 역변환(δ = atan2(-wz·L, vx), CARLA steer 부호 반전 적용) + P 속도 제어 → CARLA `VehicleControl`. microlino 기본 wheelbase 1.47 m, max_steer는 physics_control에서 자동 조회 |
 | global path 공급 | ✅ | `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py` 작성 완료. `/csv_path` transient_local 구독 → FollowPath action goal 전송. action 수락 시 MPPI 경로 추종 시작 |
 | local costmap 설정 | ✅ | `nav2_carla_params.yaml` 안에 포함. obstacle_layer(`/carla/car/lidar_2d/point_cloud`) + inflation_layer(1.5 m) + `CostCritic` 구성 완료. lidar_2d → obstacle_layer → inflation_layer → CostCritic 파이프라인 활성화. costmap은 `/local_costmap/costmap`으로 10 Hz 발행 중 |
 
 ---
 
-#### 10.1.1 `nav2_carla_params.yaml` 상세
+### 10.2 `nav2_carla_params.yaml` 상세
 
 파일 위치: `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml`
 
 파일은 `controller_server` → `MPPI 플러그인(FollowPath)` → `local_costmap` 의 3계층으로 구성된다.
 
-##### controller_server 계층
+#### controller_server 계층
 
 | 파라미터 | 값 | 설명 |
 | :--- | :--- | :--- |
@@ -1237,19 +1334,19 @@ ros2 run serial_bridge serial_bridge
 | `goal_checker` | `SimpleGoalChecker` | 목표 0.5 m / 0.3 rad 이내 도달 시 성공 |
 | `PathHandler` | `FeasiblePathHandler` | 이미 지나친 waypoint prune_distance 5.0 m 이상이면 제거 |
 
-> MPPI 플러그인·Critics·local_costmap 파라미터 상세: [Section 10.5](#105-파라미터-상세-설명-및-튜닝-가이드)
+> MPPI 플러그인·Critics·local_costmap 파라미터 상세: [Section 13](#13-파라미터-상세-설명-및-튜닝-가이드)
 
 ---
 
-#### 10.1.2 `cmd_vel_to_carla.py` 상세
+### 10.3 `cmd_vel_to_carla.py` 상세
 
 파일 위치: `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py`
 
 MPPI가 출력하는 `/cmd_vel` (`geometry_msgs/Twist`)을 CARLA `VehicleControl`로 변환하는 노드.
 
-##### 변환 로직
+#### 변환 로직
 
-###### 속도 → throttle / brake (P 제어)
+##### 속도 → throttle / brake (P 제어)
 
 ```text
 err = target_vx − current_vx
@@ -1259,18 +1356,20 @@ else:        throttle = 0,  brake = min(−KP_SPEED × err, 1.0)
 
 `KP_SPEED = 0.8` 기본값. 오버슈트(속도 초과 후 급감속) 발생 시 0.5로 낮춘다.
 
-###### yaw rate → 조향각 (자전거 모델 역변환)
+##### yaw rate → 조향각 (자전거 모델 역변환)
 
 ```text
-δ = atan2(wz × L, vx)       (단위: rad)
+δ = atan2(-wz × L, vx)      (단위: rad)
 steer = clip(δ / max_steer_rad, −1, 1)   (CARLA 정규화값)
 ```
+
+> **부호 반전 이유:** ROS/MPPI 표준에서 `wz > 0 = CCW = 좌회전`이지만 CARLA에서는 `steer > 0 = 우회전`이므로 wz에 `-1`을 곱해 방향을 일치시킨다.
 
 * `L`: 축간거리(wheelbase). CLI `--wheelbase` 로 지정 (기본값: microlino 1.47 m).
 * `max_steer_rad`: 실행 시 `vehicle.get_physics_control().wheels[:2]`에서 자동 조회.
 * `vx < 0.05 m/s` (거의 정지) 이면 `δ = 0` → 정지 중 급선회 방지.
 
-##### 실행 방법
+#### 실행 방법
 
 ```bash
 cd ~/carla
@@ -1284,7 +1383,7 @@ ros2 run dual_filter cmd_vel_to_carla \
 
 `--` 이후는 CARLA/argparse 인수, 이전은 ROS 인수.
 
-##### 차량별 조정 필요 파라미터
+#### 차량별 조정 필요 파라미터
 
 | 파라미터 | 조정 방법 |
 | :--- | :--- |
@@ -1293,13 +1392,13 @@ ros2 run dual_filter cmd_vel_to_carla \
 
 ---
 
-#### 10.1.3 `follow_path_client.py` 상세
+### 10.4 `follow_path_client.py` 상세
 
 파일 위치: `mppi_ws/src/dual_filter/dual_filter/follow_path_client.py`
 
 `csv_to_utm`이 발행하는 `/csv_path`를 받아 `controller_server`의 `FollowPath` action에 goal을 전송하는 노드.
 
-##### 동작 흐름
+#### 동작 흐름
 
 ```text
 csv_to_utm 발행 → /csv_path (transient_local)
@@ -1311,11 +1410,11 @@ controller_server /follow_path action server
 MPPI 경로 추종 시작 → /cmd_vel 발행
 ```
 
-##### QoS 주의사항
+#### QoS 주의사항
 
 `csv_to_utm`은 `/csv_path`를 `transient_local RELIABLE KeepLast(1)`로 발행한다. `follow_path_client`가 **다른 QoS로 구독하면 경로를 영원히 수신하지 못한다**. 코드 내 `_path_qos`가 동일 QoS로 설정되어 있으므로 수정하지 않는다.
 
-##### action 결과 코드
+#### action 결과 코드
 
 ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
 
@@ -1327,17 +1426,17 @@ ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
 
 ---
 
-#### 10.1.4 CSV 경로 스플라인 보간 도구 (`csv_interpolater.py`)
+### 10.5 CSV 경로 스플라인 보간 도구 (`csv_interpolater.py`)
 
 파일 위치: `mppi_ws/src/gnss_to_utm/src/csv_interpolater.py`
 
-##### MPPI에서 스플라인 보간이 필수인 이유
+#### MPPI에서 스플라인 보간이 필수인 이유
 
 MPPI는 수천 개의 후보 궤적을 경로와 비교해 비용을 평가하는 방식으로 동작한다. 이 과정에서 경로 자체의 품질이 추종 성능을 직접 결정한다.
 
 GNSS 수록 주기가 1~5 Hz라면 원시 CSV의 waypoint 간격이 1~3 m 이상이 된다. MPPI가 이처럼 간격이 넓은 경로를 입력받으면 다음 문제가 구조적으로 발생한다:
 
-###### ① PathAlignCritic 방향 불연속 → 조향 진동
+##### ① PathAlignCritic 방향 불연속 → 조향 진동
 
 ```text
 PathAlignCritic 은 인접 waypoint 간 방향 벡터를 "경로 방향"으로 간주한다.
@@ -1348,7 +1447,7 @@ MPPI 는 이 방향 변화를 "실제 커브"로 인식하므로,
 직선 구간에서도 불필요한 조향 명령이 생성된다.
 ```
 
-###### ② offset_from_furthest 의 실거리가 불균일
+##### ② offset_from_furthest 의 실거리가 불균일
 
 ```text
 PathFollowCritic.offset_from_furthest = 5 의 의미:
@@ -1361,7 +1460,7 @@ PathFollowCritic.offset_from_furthest = 5 의 의미:
 직선 구간에서는 너무 먼 점을 추적해 속도가 불안정해진다.
 ```
 
-###### ③ PathAngleCritic heading 계산 오차
+##### ③ PathAngleCritic heading 계산 오차
 
 ```text
 PathAngleCritic은 "현재 차량 heading vs 경로 방향" 오차를 최소화한다.
@@ -1373,7 +1472,7 @@ PathAngleCritic은 "현재 차량 heading vs 경로 방향" 오차를 최소화�
 
 **결론**: 스플라인 보간을 적용하면 MPPI critic 들이 이상적인 입력을 받게 되어 파라미터 튜닝 없이도 추종 품질이 즉각적으로 개선된다. `csv_interpolater.py` 를 경로 녹화 직후 한 번 실행해 두면 이후 모든 주행에서 같은 dense CSV를 재사용할 수 있다.
 
-##### 동작 원리
+#### 동작 원리
 
 ```text
 입력 CSV (원시 GNSS UTM)
@@ -1391,7 +1490,7 @@ PathAngleCritic은 "현재 차량 heading vs 경로 방향" 오차를 최소화�
   예) 점 수: 5000, 총 거리: 500 m, 간격: 0.1 m
 ```
 
-##### csv_interpolater.py 실행 방법
+#### csv_interpolater.py 실행 방법
 
 ```bash
 # ROS 환경 불필요. 시스템 Python3 또는 .venv 어디서나 실행 가능.
@@ -1407,7 +1506,7 @@ python3 csv_interpolater.py input.csv output_50cm.csv --interval 0.5
 python3 csv_interpolater.py input.csv output.csv --interval 0.1 --plot
 ```
 
-##### 보간 결과 csv_to_utm 에 적용
+#### 보간 결과 csv_to_utm 에 적용
 
 ```yaml
 # mppi_ws/src/gnss_to_utm/config/csv_to_utm.yaml
@@ -1417,7 +1516,7 @@ csv_to_utm:
     csv_file_path: "/path/to/output_10cm.csv"   # ← 보간된 파일로 교체
 ```
 
-##### MPPI 경로 품질 개선 효과
+#### MPPI 경로 품질 개선 효과
 
 | 항목 | 원시 CSV (1~3 m 간격) | 보간 CSV (10 cm 간격) |
 | :--- | :--- | :--- |
@@ -1431,7 +1530,7 @@ csv_to_utm:
 
 ---
 
-### 10.2 레퍼런스 맵 제작 (MPPI 추종 경로 생성)
+## 11. 레퍼런스 맵 제작 (MPPI 추종 경로 생성)
 
 MPPI가 추종할 경로는 **실제 주행 데이터를 녹화 → UTM CSV 변환 → 스플라인 보간**의 3단계로 제작한다.
 
@@ -1444,7 +1543,7 @@ MPPI가 추종할 경로는 **실제 주행 데이터를 녹화 → UTM CSV 변�
 
 ---
 
-#### Step 1 — 주행 경로 ROS2 bag 녹화
+### Step 1 — 주행 경로 ROS2 bag 녹화
 
 레퍼런스 경로를 주행하면서 F9R GNSS 토픽을 bag으로 기록한다.
 
@@ -1467,7 +1566,7 @@ ros2 bag record /carla/car/f9r/fix \
 
 ---
 
-#### Step 2 — bag → 원시 UTM CSV 변환 (`f9r_to_csv.py`)
+### Step 2 — bag → 원시 UTM CSV 변환 (`f9r_to_csv.py`)
 
 ```bash
 # f9r_to_csv.py 상단의 경로를 녹화한 bag에 맞게 수정 후 실행
@@ -1508,11 +1607,11 @@ X(E/m),Y(N/m)
 
 ---
 
-#### Step 3 — 스플라인 보간 + 등간격 재샘플링 (`csv_interpolater.py`)
+### Step 3 — 스플라인 보간 + 등간격 재샘플링 (`csv_interpolater.py`)
 
 원시 CSV는 주행 속도에 따라 점 간격이 1~3 m로 불균일하다.
 MPPI critic이 안정적으로 작동하려면 10 cm 등간격으로 재샘플링이 필요하다
-(이유는 [10.1.4](#1014-csv-경로-스플라인-보간-도구-csv_interpolaterpy) 참고).
+(이유는 [Section 10.5](#105-csv-경로-스플라인-보간-도구-csv_interpolaterpy) 참고).
 
 ```bash
 cd ~/carla/mppi_ws/src/gnss_to_utm/src
@@ -1551,7 +1650,7 @@ python3 csv_interpolater.py \
 
 ---
 
-#### Step 4 — csv_to_utm 노드에 적용
+### Step 4 — csv_to_utm 노드에 적용
 
 보간된 CSV를 `csv_to_utm.yaml`에 등록한다.
 
@@ -1565,7 +1664,7 @@ csv_to_utm:
 
 ---
 
-#### 전체 흐름 요약
+### 전체 흐름 요약
 
 ```text
 ① ros2 bag record /carla/car/f9r/fix
@@ -1594,57 +1693,11 @@ csv_to_utm:
 
 ---
 
-### 10.3 Nav2 설치
-
-Nav2 패키지는 apt를 통해 설치 완료되어 있다 (10.1 MPPI 구성 항목 참고). 소스 빌드나 커스터마이징이 필요한 경우 방법 B를 참고한다.
-
-#### 방법 A — apt 설치 (권장, 빠름)
-
-```bash
-sudo apt update
-sudo apt install \
-  ros-humble-nav2-controller \
-  ros-humble-nav2-mppi-controller \
-  ros-humble-nav2-costmap-2d \
-  ros-humble-nav2-core \
-  ros-humble-nav2-util \
-  ros-humble-nav2-msgs \
-  ros-humble-nav2-bringup
-```
-
-설치 확인:
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 pkg list | grep nav2_mppi_controller
-# nav2_mppi_controller
-```
-
-#### 방법 B — 소스 빌드 (커스텀 수정 필요 시)
-
-```bash
-cd ~/carla/navigation2
-source /opt/ros/humble/setup.bash
-
-# 의존성 설치
-rosdep install --from-paths . --ignore-src -r -y
-
-# 빌드 (시간이 오래 걸림, 별도 워크스페이스 권장)
-colcon build --packages-select \
-  nav2_msgs nav2_core nav2_util nav2_costmap_2d \
-  nav2_controller nav2_mppi_controller \
-  --symlink-install
-
-source install/setup.bash
-```
-
----
-
-### 10.4 CARLA + MPPI 실행 매뉴얼
+## 12. 시스템 실행 매뉴얼
 
 dual_filter 스택이 빌드된 상태이고 Nav2가 설치된 상태를 전제로 한다. 각 구성 파일의 상세 내용은 섹션 10.1.1–10.1.3을 참고한다.
 
-#### 사전 준비 (빌드)
+### 사전 준비 (빌드)
 
 ```bash
 # robot_localization 설치 (최초 1회)
@@ -1660,7 +1713,7 @@ source install/setup.bash
 > **`No executable found` 오류 시**: `setup.py`에 entry point를 추가한 뒤 빌드하지 않으면
 > 발생한다. 위 명령으로 재빌드하면 `cmd_vel_to_carla`, `follow_path_client` 가 등록된다.
 
-#### 10.4.1 전체 실행 순서
+### 12.1 전체 실행 순서
 
 아래 순서를 정확히 따라야 한다. 특히 `ros2_sensor.py`가 `/clock`을 먼저 발행해야 EKF 시간 동기화가 올바르게 동작한다.
 
@@ -1676,7 +1729,7 @@ source install/setup.bash
 터미널 9: follow_path_client (경로 추종 시작)
 ```
 
-##### 터미널 1 — CARLA 시뮬레이터
+#### 터미널 1 — CARLA 시뮬레이터
 
 ```bash
 cd ~/carla
@@ -1687,7 +1740,7 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
 > `--ros2` 제거: CARLA 내장 ROS2 브리지와 터미널 3의 `ros2_sensor.py --python-ros2`가 동시에
 > LibCarla 스트리밍 서버에 붙으면 "Invalid session: no stream available" 에러가 발생하므로 반드시 제외.
 
-##### 터미널 2 — 차량 스폰
+#### 터미널 2 — 차량 스폰
 
 ```bash
 cd ~/carla
@@ -1697,7 +1750,7 @@ python PythonAPI/examples/manual_control.py \
   --rolename car --filter vehicle.micro.microlino --generation 2 --sync
 ```
 
-##### 터미널 3 — 센서 브리지 (`/clock` 포함)
+#### 터미널 3 — 센서 브리지 (`/clock` 포함)
 
 ```bash
 cd ~/carla
@@ -1710,7 +1763,7 @@ python ros2_sensor/ros2_sensor.py \
   --sensors f9r f9p imu lidar_2d
 ```
 
-##### 터미널 4 — Dual Filter (EKF + GNSS)
+#### 터미널 4 — Dual Filter (EKF + GNSS)
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -1718,7 +1771,7 @@ source ~/carla/mppi_ws/install/setup.bash
 ros2 launch dual_filter dual_filter.launch.py
 ```
 
-##### 터미널 5 (선택) — RViz2
+#### 터미널 5 (선택) — RViz2
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -1726,7 +1779,7 @@ rviz2 -d ~/carla/ros2_sensor/rviz/ros2_sensor.rviz \
   --ros-args -p use_sim_time:=true
 ```
 
-##### 터미널 6 — 경로 파일 → `/csv_path`
+#### 터미널 6 — 경로 파일 → `/csv_path`
 <!-- csv_to_utm.yaml에서 csv_file_path를 실제 경로로 설정 후: -->
 
 ```bash
@@ -1735,7 +1788,7 @@ source ~/carla/mppi_ws/install/setup.bash
 ros2 launch gnss_to_utm csv_to_utm.launch.py
 ```
 
-##### 터미널 7 — Nav2 controller_server (MPPI)
+#### 터미널 7 — Nav2 controller_server (MPPI)
 <!--
 source /opt/ros/humble/setup.bash
 source ~/carla/nav2_ws/install/setup.bash    # OpenMP 빌드 버전 로드 (apt 버전보다 우선)
@@ -1764,7 +1817,7 @@ ros2 launch dual_filter controller.launch.py
 > 생겨 action server가 동작하지 않는다. 실행 전 `ros2 node list | grep controller`로
 > 기존 인스턴스가 없는지 확인한다.
 
-##### 터미널 8 — `cmd_vel` → CARLA 제어
+#### 터미널 8 — `cmd_vel` → CARLA 제어
 
 ```bash
 cd ~/carla
@@ -1776,7 +1829,7 @@ ros2 run dual_filter cmd_vel_to_carla \
   -- --rolename car --wheelbase 1.47
 ```
 
-##### 터미널 9 — 경로 추종 시작
+#### 터미널 9 — 경로 추종 시작
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -1784,7 +1837,7 @@ source ~/carla/mppi_ws/install/setup.bash
 ros2 run dual_filter follow_path_client
 ```
 
-#### 10.4.2 동작 확인
+### 12.2 동작 확인
 
 EKF 스택 확인:
 
@@ -1843,7 +1896,7 @@ ros2 run tf2_tools view_frames
 ros2 topic hz /local_costmap/costmap
 ```
 
-#### 10.4.3 최소 실행 (costmap 없이 경로 추종만 테스트)
+### 12.3 최소 실행 (costmap 없이 경로 추종만 테스트)
 
 장애물 회피 없이 경로 추종 기능만 먼저 테스트하려면 `nav2_carla_params.yaml`의 `obstacle_layer`를 비활성화하고 critics에서 `CostCritic`을 제거한다.
 
@@ -1872,7 +1925,7 @@ critics:
 
 ---
 
-#### 10.4.4 전체 데이터 흐름
+### 12.4 전체 데이터 흐름
 
 ```text
 CARLA Simulator
@@ -1913,7 +1966,7 @@ CARLA Simulator
 
 ---
 
-#### 10.4.5 종료
+### 12.5 종료
 
 ```bash
 pkill -TERM -f 'follow_path_client'
@@ -1928,7 +1981,7 @@ pkill -9 -f 'CarlaUE4-Linux-Shipping'
 
 ---
 
-#### 10.4.6 알려진 오류 및 해결
+### 12.6 알려진 오류 및 해결
 
 아래는 실제 실행 중 발생한 오류와 적용한 수정 사항이다.
 
@@ -2018,22 +2071,34 @@ CSV row 1924 : datum 기준 +22.65 m (경로 파일 끝)
 | 증상 | `FollowPath goal 수락됨` → 수십 ms 만에 `Reached the goal!`. 차량이 전혀 이동하지 않음. |
 | 에러 | `[tf_help]: Transform data too old … Data time: 1780166575s, Transform time: 463s` |
 | 원인 | `csv_to_utm` 노드가 `use_sim_time` 미설정 → `path.header.stamp = this->get_clock()->now()` 가 **벽시계(wall clock) 시간**(~1780166575 s)을 반환. 반면 `controller_server` / 글로벌 EKF는 `use_sim_time: true` → TF는 **CARLA 시뮬레이션 시간**(~463 s)으로 발행. 두 클록이 완전히 달라 `utm→odom` TF 조회 실패. TF 조회 실패 시 MPPI 는 유효한 path pose 를 0개로 보고, SimpleGoalChecker 가 즉시 도달 판정. |
-| 수정 파일 | `mppi_ws/src/gnss_to_utm/src/csv_to_utm.cpp` |
-| 수정 내용 | `path.header.stamp = this->get_clock()->now()` → `path.header.stamp = rclcpp::Time(0)` |
+| 수정 파일 | `mppi_ws/src/gnss_to_utm/launch/csv_to_utm.launch.py` |
+| 수정 내용 | `csv_to_utm` 노드 실행 시 `use_sim_time: True` 파라미터 추가 |
 
-`rclcpp::Time(0)` 의 의미: TF 시스템에 "현재 시각의 최신 변환을 사용하라"는 요청. 시뮬레이션/벽시계 클록 불일치와 TF 버퍼 만료 문제를 동시에 해결. 사전 녹화 경로(static path)에 표준적으로 사용하는 패턴.
+`csv_to_utm.launch.py`의 Node 선언에 `{'use_sim_time': True}`를 파라미터로 추가하면, `this->now()`가 벽시계 대신 CARLA 시뮬레이션 시간을 반환하여 `controller_server` / EKF의 TF 타임스탬프와 일치하게 된다.
 
-```cpp
-// 수정 전
-path.header.stamp = this->get_clock()->now();  // 벽시계 → TF 클록(sim time)과 불일치
+```python
+# 수정 전
+csv_to_utm_node = Node(
+    package='gnss_to_utm',
+    executable='csv_to_utm',
+    name='csv_to_utm',
+    output='screen',
+    parameters=[params_file],          # use_sim_time 미설정 → 벽시계 사용
+)
 
-// 수정 후
-path.header.stamp = rclcpp::Time(0);           // 최신 TF 사용 (클록 무관)
+# 수정 후
+csv_to_utm_node = Node(
+    package='gnss_to_utm',
+    executable='csv_to_utm',
+    name='csv_to_utm',
+    output='screen',
+    parameters=[params_file, {'use_sim_time': True}],  # sim time 사용
+)
 ```
 
 | 확인 방법 | 내용 |
 | :--- | :--- |
-| 빌드 | `cd ~/carla/mppi_ws && colcon build --packages-select gnss_to_utm --symlink-install` |
+| 빌드 불필요 | launch 파일 수정만으로 즉시 적용 (재빌드 불필요) |
 | 정상 로그 | controller_server 에서 `Reached the goal!` 없이 MPPI 제어 루프 지속 실행 |
 
 ---
@@ -2047,12 +2112,12 @@ path.header.stamp = rclcpp::Time(0);           // 최신 TF 사용 (클록 무�
 | 원인 | MPPI 궤적 계산(CPU 단일 스레드)이 한 제어 주기(50 ms)를 초과. 제어 루프가 실제 시간보다 뒤처지면서 TF 조회 시 요청 시각이 TF 버퍼의 최신 데이터보다 50 ms 미래가 됨 → 하드 예외 발생 → 즉시 ABORT. `failure_tolerance` 타이머와 무관한 hard-error 경로로 종료됨 |
 | 원인 수치 | `batch_size=2000, time_steps=56, controller_frequency=20 Hz` 기준 약 60 ms 소요 → 20 Hz 예산(50 ms) 초과 |
 | 해결 A (즉시 적용) | `nav2_carla_params.yaml` 에서 계산량 감소: `batch_size: 2000 → 1000`, `time_steps: 56 → 40`, `visualize: false`, `controller_frequency: 10.0`, `model_dt: 0.10` |
-| 해결 B (근본 해결) | nav2_mppi_controller 소스 빌드 + OpenMP 활성화 → [Section 10.4.7](#1047-nav2_mppi_controller-openmp-빌드-연산-과다-근본-해결) 참고. i7-13700HX 24 스레드 기준 약 10x 속도 향상 기대 |
+| 해결 B (근본 해결) | nav2_mppi_controller 소스 빌드 + OpenMP 활성화 → [Section 12.7](#127-nav2_mppi_controller-openmp-빌드-연산-과다-근본-해결) 참고. i7-13700HX 24 스레드 기준 약 10x 속도 향상 기대 |
 | 확인 | `ros2 topic hz /cmd_vel` → 설정한 `controller_frequency` 에 근접하는지 확인 |
 
 ---
 
-### 10.4.7 nav2_mppi_controller OpenMP 빌드 (연산 과다 근본 해결)
+### 12.7 nav2_mppi_controller OpenMP 빌드 (연산 과다 근본 해결)
 
 오류 ⑦에서 소개한 "해결 B — 근본 해결"의 구체적인 방법이다. apt로 설치된 기본 nav2_mppi_controller는 OpenMP가 비활성화된 상태로 빌드되어 있어 CPU 코어를 1개만 사용한다. 소스를 수정하여 OpenMP를 활성화하면 24코어(i7-13700HX 기준) 병렬 연산으로 약 10x 속도 향상을 기대할 수 있다.
 
@@ -2152,18 +2217,18 @@ source ~/carla/mppi_ws/install/setup.bash
 
 ---
 
-### 10.5 파라미터 상세 설명 및 튜닝 가이드
+## 13. 파라미터 상세 설명 및 튜닝 가이드
 
 > 모든 파라미터 현재값은 `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml` 기준.
 > 차량: `vehicle.micro.microlino` (wheelbase 1.47 m, 차폭 1.475 m)
 
 ---
 
-#### 10.5.1 controller_server 파라미터
+### 13.1 controller_server 파라미터
 
 ---
 
-##### `controller_frequency` (현재: 10.0 Hz)
+#### `controller_frequency` (현재: 10.0 Hz)
 
 MPPI 제어 루프가 1초에 몇 번 실행되는지를 결정하는 가장 근본적인 파라미터다. 이 값은 **반드시 `model_dt = 1 / controller_frequency`와 함께 수정**해야 한다.
 
@@ -2178,7 +2243,7 @@ MPPI 제어 루프가 1초에 몇 번 실행되는지를 결정하는 가장 근
 
 ---
 
-##### `costmap_update_timeout` (현재: 0.30 s)
+#### `costmap_update_timeout` (현재: 0.30 s)
 
 controller_server가 costmap 갱신을 이 시간 안에 받지 못하면 제어를 실패 처리한다. CARLA sim_time 기반에서 LiDAR 콜백 지연이 발생할 수 있으므로 여유를 충분히 둬야 한다.
 
@@ -2189,7 +2254,7 @@ controller_server가 costmap 갱신을 이 시간 안에 받지 못하면 제어
 
 ---
 
-##### `failure_tolerance` (현재: 1.5 s)
+#### `failure_tolerance` (현재: 1.5 s)
 
 유효한 cmd_vel을 이 시간 동안 생성하지 못하면 FollowPath action 실패로 처리한다.
 
@@ -2200,7 +2265,7 @@ controller_server가 costmap 갱신을 이 시간 안에 받지 못하면 제어
 
 ---
 
-##### `prune_distance` (현재: 5.0 m) — PathHandler
+#### `prune_distance` (현재: 5.0 m) — PathHandler
 
 이미 지나친 waypoint를 경로에서 제거하는 기준 거리. 차량의 현재 위치보다 이 거리 이상 뒤에 있는 waypoint는 MPPI에 전달되는 로컬 경로에서 제거된다.
 
@@ -2213,11 +2278,11 @@ controller_server가 costmap 갱신을 이 시간 안에 받지 못하면 제어
 
 ---
 
-#### 10.5.2 MPPI Core 파라미터 (FollowPath)
+### 13.2 MPPI Core 파라미터 (FollowPath)
 
 ---
 
-##### MPPI 샘플링 구조와 warm-start
+#### MPPI 샘플링 구조와 warm-start
 
 MPPI는 매 제어 주기마다 `batch_size`개의 후보 궤적을 병렬 생성한다. 각 후보의 제어 입력은 이전 주기 최적 해(warm-start)에 가우시안 노이즈를 더한 것이다:
 
@@ -2240,7 +2305,7 @@ u_optimal : 이전 주기 최적 제어 시퀀스 (warm-start)
 
 ---
 
-##### `time_steps` (현재: 40) × `model_dt` (현재: 0.10 s)
+#### `time_steps` (현재: 40) × `model_dt` (현재: 0.10 s)
 
 예측 수평선(prediction horizon) = `time_steps × model_dt`를 결정한다.
 
@@ -2258,7 +2323,7 @@ u_optimal : 이전 주기 최적 제어 시퀀스 (warm-start)
 
 ---
 
-##### 속도 상향 시 연동 확인 — 예측 거리·제동 거리·costmap
+#### 속도 상향 시 연동 확인 — 예측 거리·제동 거리·costmap
 
 예측 수평선은 **시간** 단위다. `time_steps × model_dt = 4.0 s`는 속도와 무관하게 고정된다. 그러나 물리적 예측 거리(`vx × 4.0 s`)는 속도에 비례해 자동으로 늘어난다.
 
@@ -2273,7 +2338,7 @@ vx = 8 m/s →  8 × 40 × 0.1 = 32 m
 
 → **`time_steps` 자체를 올릴 필요는 없는 경우가 많다.** 단, 아래 두 조건을 반드시 확인해야 한다.
 
-###### 조건 1 — 제동 거리 < 예측 거리
+##### 조건 1 — 제동 거리 < 예측 거리
 
 ```text
 제동 거리 = vx² / (2 × |ax_min|) = vx² / 6.0   (ax_min = −3.0 m/s² 기준)
@@ -2285,7 +2350,7 @@ vx = 10 m/s → 100 / 6 = 16.7 m  (예측 거리 40 m의 42%)  ✓
 
 현재 `ax_min = -3.0 m/s²` 설정에서는 `vx_max`를 10 m/s까지 올려도 제동 거리 < 예측 거리 조건을 만족한다. 만약 `ax_min`을 완만하게 (예: -1.0 m/s²) 설정하면 `vx=5`에서도 제동 거리가 12.5 m로 커져 `time_steps` 증가가 필요해진다.
 
-###### 조건 2 — costmap 반경 ≥ 예측 거리의 절반
+##### 조건 2 — costmap 반경 ≥ 예측 거리의 절반
 
 CostCritic은 로컬 costmap 범위 내의 장애물만 평가한다. 현재 costmap은 20 m × 20 m → 차량 전방 최대 **10 m**까지만 장애물 인식 가능하다.
 
@@ -2306,7 +2371,7 @@ vx = 8 m/s → 예측 거리 32 m → costmap 전방 10 m 커버 → 10~32 m 구
 
 ---
 
-##### `batch_size` (현재: 1000)
+#### `batch_size` (현재: 1000)
 
 MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
@@ -2321,14 +2386,14 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `open_loop` (현재: false)
+#### `open_loop` (현재: false)
 
 - `false` (닫힌루프): 각 time_step마다 실제 차량 odometry를 반영해 롤아웃. CARLA처럼 물리 피드백이 있는 환경에서는 **false 권장**.
 - `true` (열린루프): 차량 모델만으로 롤아웃. 빠르지만 실제 차량 거동과 괴리 발생.
 
 ---
 
-##### `ax_max`, `ax_min`, `az_max` (가속도 한계)
+#### `ax_max`, `ax_min`, `az_max` (가속도 한계)
 
 | 파라미터 | 현재값 | 의미 |
 | :--- | :--- | :--- |
@@ -2344,7 +2409,7 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `vx_std` (현재: 0.3 m/s) ← **속도 탐색의 핵심**
+#### `vx_std` (현재: 0.3 m/s) ← **속도 탐색의 핵심**
 
 각 후보 궤적의 속도 제어 입력에 추가하는 가우시안 노이즈의 표준편차.
 
@@ -2359,7 +2424,7 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `wz_std` (현재: 0.3 rad/s) ← **조향 진동의 핵심**
+#### `wz_std` (현재: 0.3 rad/s) ← **조향 진동의 핵심**
 
 각 후보 궤적의 yaw rate 제어 입력에 추가하는 가우시안 노이즈의 표준편차.
 
@@ -2376,7 +2441,7 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `vx_max` / `vx_min` / `wz_max`
+#### `vx_max` / `vx_min` / `wz_max`
 
 | 파라미터 | 현재값 | 의미 |
 | :--- | :--- | :--- |
@@ -2391,7 +2456,7 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `iteration_count` (현재: 1)
+#### `iteration_count` (현재: 1)
 
 한 제어 주기 안에서 MPPI 최적화 반복 횟수.
 
@@ -2402,7 +2467,7 @@ MPPI가 한 제어 주기에 샘플링하는 후보 궤적의 수.
 
 ---
 
-##### `temperature` (현재: 0.3) ← **속도·오실레이션의 핵심 균형 파라미터**
+#### `temperature` (현재: 0.3) ← **속도·오실레이션의 핵심 균형 파라미터**
 
 MPPI softmax 가중치의 날카로움(sharpness)을 조절한다. MPPI 알고리즘의 λ(온도 역수)에 해당.
 
@@ -2420,7 +2485,7 @@ MPPI softmax 가중치의 날카로움(sharpness)을 조절한다. MPPI 알고�
 
 ---
 
-##### `gamma` (현재: 0.015)
+#### `gamma` (현재: 0.015)
 
 미래 단계 비용에 대한 할인율 (MPPI 논문의 γ). 작을수록 먼 미래 비용을 덜 고려한다.
 
@@ -2431,7 +2496,7 @@ MPPI softmax 가중치의 날카로움(sharpness)을 조절한다. MPPI 알고�
 
 ---
 
-##### `regenerate_noises` (현재: true)
+#### `regenerate_noises` (현재: true)
 
 | 값 | 효과 |
 | :--- | :--- |
@@ -2440,7 +2505,7 @@ MPPI softmax 가중치의 날카로움(sharpness)을 조절한다. MPPI 알고�
 
 ---
 
-##### `min_turning_r` (현재: 3.3 m)
+#### `min_turning_r` (현재: 3.3 m)
 
 Ackermann 운동 모델에서 MPPI 샘플 궤적의 곡률 상한을 결정한다.
 
@@ -2455,7 +2520,7 @@ Ackermann 운동 모델에서 MPPI 샘플 궤적의 곡률 상한을 결정한�
 
 ---
 
-##### `collision_lookahead_time` (현재: 2.0 s) — TrajectoryValidator
+#### `collision_lookahead_time` (현재: 2.0 s) — TrajectoryValidator
 
 파일: `nav2_carla_params.yaml` → `FollowPath.TrajectoryValidator`
 
@@ -2480,24 +2545,24 @@ vx = 8 m/s → 검사 거리 = 2.0 × 8 = 16 m  ← costmap 반경(10 m) 초과
 
 ---
 
-#### 10.5.3 Critic 파라미터
+### 13.3 Critic 파라미터
 
 Critics는 각 후보 궤적에 비용을 부여하는 함수다. **`cost_weight`가 높을수록 해당 기준이 최적 궤적 선택에 강하게 반영**된다. 합산 비용이 가장 낮은 궤적이 cmd_vel로 출력된다.
 
 ---
 
-##### PathAlignCritic (현재 weight: 14.0) ← **가장 중요한 Critic**
+#### PathAlignCritic (현재 weight: 14.0) ← **가장 중요한 Critic**
 
 궤적이 전체 경로와 **평행**하게 달릴수록 낮은 비용을 부여한다.
 
-###### `cost_weight` (현재: 12.0)
+##### `cost_weight` (현재: 14.0)
 
 | 방향 | 효과 | 주의사항 |
 | :--- | :--- | :--- |
 | **올리면** (예: 16) | 경로 이탈에 강한 패널티 → 경로 추종 정밀도 향상 | 경로 이탈을 피하기 위해 속도를 낮추는 경향 발생; 장애물 회피 유연성 감소 |
 | **낮추면** (예: 8) | 경로 약간 이탈 허용 → 고속 주행 시 자연스러운 라인 선택 | 경로 이탈이 크면 다른 Critic이 보상을 줘도 경로 복귀 못함 |
 
-###### `offset_from_furthest` (현재: 20)
+##### `offset_from_furthest` (현재: 20)
 
 예측 구간 내에서 도달 가능한 가장 먼 waypoint에서 이 숫자만큼 앞 waypoint를 경로 정렬 기준점으로 설정한다.
 
@@ -2519,14 +2584,14 @@ vx = 8 m/s 로 올리면:
   → offset_from_furthest를 30~35로 올려 기준점을 다시 10~15 m 근처로 조정 필요
 ```
 
-###### `use_path_orientations` (현재: false)
+##### `use_path_orientations` (현재: false)
 
 | 값 | 효과 |
 | :--- | :--- |
 | `true` | 횡거리 이탈 + **heading 이탈** 동시 패널티 → S자 궤적(경로 근처지만 방향이 틀린 궤적)을 직접 억제 |
 | `false` | 횡거리 이탈만 패널티 → S자 궤적도 경로 근처에 있으면 낮은 비용 → 오실레이션 발생 가능 |
 
-###### `trajectory_point_step` (현재: 4)
+##### `trajectory_point_step` (현재: 4)
 
 PathAlignCritic이 궤적 비용을 계산할 때 `time_steps` 중 몇 번째 포인트마다 평가할지 결정한다.
 
@@ -2546,18 +2611,18 @@ time_steps = 40, trajectory_point_step = 4
 
 ---
 
-##### PathFollowCritic (현재 weight: 5.0)
+#### PathFollowCritic (현재 weight: 5.0)
 
 경로상 현재 위치 앞의 waypoint를 향해 이동할수록 낮은 비용을 부여한다. 이 Critic이 속도를 간접적으로 결정한다.
 
-###### `cost_weight` (현재: 5.0)
+##### `cost_weight` (현재: 5.0)
 
 | 방향 | 효과 |
 | :--- | :--- |
 | **올리면** (예: 12) | 더 먼 waypoint 도달을 더 강하게 보상 → MPPI가 고속 궤적을 선택하도록 유도; 속도 증가 |
 | **낮추면** (예: 4) | 속도 인센티브 감소 → MPPI가 안전·안정 위주로 수렴; 저속화 |
 
-###### `offset_from_furthest` (현재: 5, PathFollowCritic용)
+##### `offset_from_furthest` (현재: 5, PathFollowCritic용)
 
 | 방향 | 효과 |
 | :--- | :--- |
@@ -2568,22 +2633,22 @@ PathAlignCritic의 `offset_from_furthest`와 마찬가지로, 속도 상향 시 
 
 ---
 
-##### PathAngleCritic (현재 weight: 2.0)
+#### PathAngleCritic (현재 weight: 2.0)
 
 경로 방향(waypoint-to-waypoint heading)과 차량 heading을 정렬한다. 급커브 진입 전에 차량을 미리 회전시키는 효과가 있다.
 
-###### `cost_weight` (현재: 2.0)
+##### `cost_weight` (현재: 2.0)
 
 | 방향 | 효과 | 주의사항 |
 | :--- | :--- | :--- |
 | **올리면** (예: 5) | 경로 방향에 강하게 정렬 → 커브 진입 시 heading 오차 최소화 | 직선 구간에서 heading 과민 반응 → 조향 진동 유발 |
 | **낮추면** (예: 1) | heading 정렬 약화 → 직선 구간에서 안정적 | 급커브에서 진입 방향 늦게 설정 → 경로 이탈 가능 |
 
-###### `max_angle_to_furthest` (현재: 1.2 rad ≈ 69°)
+##### `max_angle_to_furthest` (현재: 1.2 rad ≈ 69°)
 
 경로 방향과 현재 heading의 차이가 이 각도를 초과하면 PathAngleCritic 비활성화. 이미 크게 틀어진 상황에서 heading 정렬 페널티가 경로 복귀를 방해하지 않도록 한다.
 
-###### `forward_preference` (현재: true)
+##### `forward_preference` (현재: true)
 
 PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부.
 
@@ -2594,11 +2659,11 @@ PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부
 
 ---
 
-##### GoalCritic (현재 weight: 5.0)
+#### GoalCritic (현재 weight: 5.0)
 
 예측 수평선 끝(time_steps 번째 pose)이 목표 지점과 가까울수록 낮은 비용.
 
-###### `threshold_to_consider` (현재: 2.0 m)
+##### `threshold_to_consider` (현재: 2.0 m)
 
 목표 2.0 m 이내에 들어와야 활성화된다. 멀리 있을 때는 PathFollowCritic이 경로 추종을 담당하므로 GoalCritic이 간섭하지 않도록 이 값은 작게 유지한다.
 
@@ -2609,7 +2674,7 @@ PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부
 
 ---
 
-##### GoalAngleCritic (현재 weight: 3.0)
+#### GoalAngleCritic (현재 weight: 3.0)
 
 최종 목표 pose의 방향으로 차량 heading을 정렬한다. 주차나 정밀 정지가 필요한 경우 중요하다.
 
@@ -2620,7 +2685,7 @@ PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부
 
 ---
 
-##### ConstraintCritic (현재 weight: 4.0)
+#### ConstraintCritic (현재 weight: 4.0)
 
 속도·조향 범위(`vx_min~vx_max`, `wz_max`)를 벗어나는 궤적에 패널티.
 
@@ -2631,15 +2696,15 @@ PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부
 
 ---
 
-##### CostCritic (현재 weight: 3.81)
+#### CostCritic (현재 weight: 3.81)
 
 각 후보 궤적이 지나는 costmap 셀 비용을 합산해 장애물 근처 궤적에 패널티.
 
-###### `collision_cost` (현재: 1,000,000)
+##### `collision_cost` (현재: 1,000,000)
 
 충돌(LETHAL_OBSTACLE) 셀을 지나는 궤적에 부여하는 페널티. 매우 높게 유지해 충돌 궤적이 절대 선택되지 않도록 한다. 낮추면 MPPI가 충돌 궤적을 선택할 수 있으니 낮추지 말 것.
 
-###### `critical_cost` (현재: 300)
+##### `critical_cost` (현재: 300)
 
 차량 중심이 장애물 외곽(INSCRIBED_INFLATED_OBSTACLE)에 위치하는 궤적의 패널티.
 
@@ -2648,23 +2713,23 @@ PathAngleCritic이 heading을 정렬할 때 전진 방향만 허용할지 여부
 | **올리면** | 장애물 가장자리에도 접근 거부 → 매우 안전하지만 좁은 통로 통과 불가 |
 | **낮추면** | 가장자리 통과 허용 → 좁은 통로 통과 가능; 충돌 여유 감소 |
 
-###### `near_goal_distance` (현재: 1.0 m)
+##### `near_goal_distance` (현재: 1.0 m)
 
 목표 지점 이 거리 이내에서는 CostCritic 비활성화. 목표 근처에 정적 장애물이 있어도 도달 가능하게 한다.
 
 ---
 
-##### PreferForwardCritic (현재 weight: 5.0)
+#### PreferForwardCritic (현재 weight: 5.0)
 
 후진보다 전진 궤적 선호. 경로 추종 환경에서 후진이 완전히 불필요하면 가중치를 높여 후진 완전 억제 가능.
 
 ---
 
-#### 10.5.4 local_costmap 파라미터
+### 13.4 local_costmap 파라미터
 
 ---
 
-##### `update_frequency` / `publish_frequency` (현재: 10.0 Hz)
+#### `update_frequency` / `publish_frequency` (현재: 10.0 Hz)
 
 LiDAR 발행 주파수(20 Hz)의 절반으로 설정. `controller_frequency`와 일치시키는 것이 권장.
 
@@ -2675,7 +2740,7 @@ LiDAR 발행 주파수(20 Hz)의 절반으로 설정. `controller_frequency`와 
 
 ---
 
-##### `width` × `height` / `resolution` (현재: 20 m × 20 m / 0.1 m)
+#### `width` × `height` / `resolution` (현재: 20 m × 20 m / 0.1 m)
 
 - 0.1 m/cell: lidar_2d 포인트 간격(≈0.05 m)의 2배로 충분한 해상도.
 
@@ -2714,7 +2779,7 @@ costmap 크기를 2배로 키우면 격자 수는 4배로 늘어난다. OpenMP �
 
 ---
 
-##### `inflation_radius` (현재: 1.5 m) / `cost_scaling_factor` (현재: 3.0)
+#### `inflation_radius` (현재: 1.5 m) / `cost_scaling_factor` (현재: 3.0)
 
 **`inflation_radius`**: 장애물 격자에서 이 반경 이내까지 비용을 팽창시켜 MPPI에 안전 여유 공간을 부여한다.
 
@@ -2734,7 +2799,7 @@ costmap 크기를 2배로 키우면 격자 수는 4배로 늘어난다. OpenMP �
 
 ---
 
-##### `raytrace_max_range` / `obstacle_max_range` (현재: 18.0 m / 15.0 m)
+#### `raytrace_max_range` / `obstacle_max_range` (현재: 18.0 m / 15.0 m)
 
 | 파라미터 | 의미 |
 | :--- | :--- |
@@ -2745,7 +2810,7 @@ costmap 크기를 2배로 키우면 격자 수는 4배로 늘어난다. OpenMP �
 
 ---
 
-#### 10.5.5 현재 설정의 종합적 의도
+### 13.5 현재 설정의 종합적 의도
 
 현재 파라미터 설정은 다음 세 가지 목표의 균형을 노린다:
 
@@ -2772,7 +2837,7 @@ costmap 크기를 2배로 키우면 격자 수는 4배로 늘어난다. OpenMP �
 
 ---
 
-#### 10.5.6 `_KP_SPEED` — 스로틀 비례 제어 게인
+### 13.6 `_KP_SPEED` — 스로틀 비례 제어 게인
 
 파일: `mppi_ws/src/dual_filter/dual_filter/cmd_vel_to_carla.py` (모듈 상수, 현재값: 0.8)
 
@@ -2815,7 +2880,7 @@ err → 0 이면 throttle → 0  →  T_steady 공급 불가
 
 ---
 
-##### `--wheelbase` (현재: 1.47 m) — 조향각 계산 오차
+#### `--wheelbase` (현재: 1.47 m) — 조향각 계산 오차
 
 조향각 계산식: `δ = atan2(-wz × L, vx)` (자전거 모델 역변환, L = wheelbase)
 
@@ -2841,7 +2906,7 @@ L이 실제 차량 축간거리와 다르면 MPPI가 명령한 `wz`와 실제 �
 
 ---
 
-##### steer 출력 필터링 부재 — 오실레이션 직접 전달 경로
+#### steer 출력 필터링 부재 — 오실레이션 직접 전달 경로
 
 `cmd_vel_to_carla.py`는 MPPI의 `wz`를 `δ = atan2(-wz × L, vx)`로 변환한 뒤 **필터링 없이 즉시 CARLA `steer`로 적용**한다. MPPI가 매 제어 주기(100 ms)마다 `wz`를 출력할 때 주기 간 진동이 있으면 이 진동이 조향 액추에이터에 그대로 전달된다:
 
@@ -2874,9 +2939,9 @@ ctrl.steer = float(self._smooth_steer)
 
 ---
 
-## 11. TF 시간적 허용 오차 (TF Temporal Tolerance)
+## 14. TF 시간적 허용 오차 (TF Temporal Tolerance)
 
-### 11.1 개념
+### 14.1 개념
 
 ROS 2의 TF 시스템(`tf2_ros::Buffer`)은 노드가 발행한 좌표 변환(TF)을 타임스탬프 순으로 **링 버퍼**에 저장한다. 어떤 노드가 `lookupTransform(target_frame, source_frame, t)` 를 호출하면, tf2는 버퍼 안에서 요청 시각 `t` 에 가장 가까운 두 TF를 찾아 선형 보간한다.
 
@@ -2927,7 +2992,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 
 ---
 
-### 11.2 시스템 내 노드별 TF 조회 여부 분석
+### 14.2 시스템 내 노드별 TF 조회 여부 분석
 
 우리 시스템에서 TF를 실제로 `lookupTransform`으로 조회하는 노드를 **소스 코드 기반**으로 분류한 결과다.
 
@@ -2963,7 +3028,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 
 ---
 
-### 11.3 버그 수정 이력
+### 14.3 버그 수정 이력
 
 **증상**: 주행 중 차량이 갑자기 멈추며 다음 에러 발생:
 
@@ -2990,7 +3055,7 @@ controller_server:
 
 ---
 
-### 11.4 파라미터 상세 (Parameter Reference)
+### 14.4 파라미터 상세 (Parameter Reference)
 
 시스템에서 TF 타이밍과 관련된 파라미터 4개를 정리한다.
 

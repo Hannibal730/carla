@@ -111,6 +111,24 @@ controller_server:
       # 기본값 10 m 으로는 0 poses 에러 발생 → 30 m 으로 확장.
       max_robot_pose_search_dist: 30.0    # m
 
+      # ── MPPI 내부 경로 핸들러 ──────────────────────────────────────────────
+      # controller_server 의 PathHandler 플러그인(FeasiblePathHandler)과 별개로,
+      # MPPI optimizer 내부에도 독립적인 path_handler 가 존재하며 아래 파라미터를 읽는다.
+      # prune_distance : 이미 지나친 waypoint 를 제거하는 기준 거리.
+      #   FeasiblePathHandler.prune_distance(5.0 m)와 독립적으로 적용되므로
+      #   두 값을 일치시켜 pruning 동작을 일관되게 유지하는 것이 권장됨.
+      prune_distance: 5.0              # m  (기본값: 1.5 m)
+      # transform_tolerance : MPPI path_handler 가 경로 좌표 변환 시 허용하는 TF 지연.
+      #   소스 기본값 0.1 s → CARLA sim time TF 지연(최대 ~50 ms) 흡수에 여유가 부족.
+      #   controller_server.transform_tolerance(0.5 s) 및 costmap 과 일치시킴.
+      transform_tolerance: 0.5        # s  (기본값: 0.1 s → 0.5 s 로 상향)
+
+      # ── 컨트롤러 리셋 주기 ───────────────────────────────────────────────
+      # 마지막 computeVelocityCommands 호출로부터 이 시간(s) 이상 경과하면
+      # MPPI 내부 최적 제어 시퀀스를 0으로 리셋.
+      # 정지 → 재출발 시 이전 제어 명령 잔존으로 인한 급출발 방지.
+      reset_period: 1.0               # s  (기본값: 1.0 s)
+
       # ── 예측 수평선 ───────────────────────────────────────────────────────
       # 예측 구간 = time_steps × model_dt
       #          = 40 × 0.1 s = 4.0 s
@@ -133,11 +151,13 @@ controller_server:
       open_loop: false
 
       # ── 가속도 한계 ───────────────────────────────────────────────────────
-      # MPPI가 생성하는 후보 궤적의 가속도를 이 범위로 클리핑.
-      # CARLA microlino 실차 가속 성능 기준.
-      ax_max:  2.0                     # m/s²  (최대 전방 가속도)
-      ax_min: -3.0                     # m/s²  (최대 감속도; 브레이크 기준)
-      az_max:  1.5                     # rad/s² (최대 yaw 가속도)
+      # 주의: ax_max / ax_min / az_max 는 이 버전(Nav2 Humble 1.1.x)의 소스에
+      # getParam 선언이 없어 실제로 읽히지 않는다 (파라미터를 넘겨도 무시됨).
+      # 이 버전에서 후보 궤적의 속도는 vx_max / vx_min / wz_max 클리핑으로만 제한된다.
+      # Iron 이상 버전에서는 유효할 수 있으므로 주석으로 보존.
+      # ax_max:  2.0                   # m/s²  (최대 전방 가속도 — 이 버전 미지원)
+      # ax_min: -3.0                   # m/s²  (최대 감속도 — 이 버전 미지원)
+      # az_max:  1.5                   # rad/s² (최대 yaw 가속도 — 이 버전 미지원)
 
       # ── 탐색 노이즈 표준편차 ──────────────────────────────────────────────
       # 각 후보 궤적 제어 입력에 추가하는 가우시안 노이즈 크기.
@@ -162,6 +182,13 @@ controller_server:
       # 2~3: 계산 여유 있을 때 최적 궤적 품질 향상.
       iteration_count: 1
 
+      # ── 탐색 실패 재시도 횟수 ────────────────────────────────────────────
+      # 최적 궤적 탐색이 실패(유효 궤적 없음)했을 때 재시도 횟수.
+      # 0: 실패 즉시 이전 제어 시퀀스를 재사용.
+      # 1: 1회 재시도 후 실패 처리. 실패 빈도가 높으면 2 이상으로 높여볼 것
+      #    (계산 시간 증가 주의).
+      retry_attempt_limit: 1           # (기본값: 1)
+
       # ── temperature (중요 파라미터) ───────────────────────────────────────
       # MPPI의 softmax 가중치 날카로움 조절 (MPPI 알고리즘의 λ).
       # 낮을수록(→0): 최저 비용 궤적 하나에 집중 (greedy, 공격적).
@@ -179,7 +206,7 @@ controller_server:
       # true: /trajectories 토픽으로 모든 후보 궤적 발행 → RViz2 확인 가능.
       # 성능 부족 환경에서는 false 로 전환해 CPU 절약.
       # false: batch_size(1000) × time_steps(40) × 20Hz = 800,000 pose/s DDS 트래픽 차단
-      visualize: false
+      visualize: true
 
       # ── 노이즈 재생성 ────────────────────────────────────────────────────
       # true: 매 제어 주기마다 새 노이즈 샘플 생성 (탐색 다양성 최대화).
@@ -213,6 +240,16 @@ controller_server:
         # false: 차량 중심점(point) 기반 충돌 체크 (빠름, 초기 테스트 권장)
         # true : 차량 footprint 기반 (정확하지만 계산 비용 높음)
         consider_footprint: false
+
+      # ── 궤적 시각화 밀도 (visualize: true 일 때만 적용) ─────────────────
+      # visualize: true 이면 /trajectories 토픽으로 후보 궤적을 발행한다.
+      # batch_size(1000) × time_steps(40) 전부를 발행하면 DDS 트래픽이 크므로
+      # 아래 step 값으로 렌더링 밀도를 줄여 RViz2 부하를 완화한다.
+      TrajectoryVisualizer:
+        # trajectory_step: 몇 번째 궤적마다 시각화할지. 1=전부, 5=5개 중 1개.
+        trajectory_step: 5             # (기본값: 5)
+        # time_step: 각 궤적에서 몇 번째 time step마다 점을 찍을지.
+        time_step: 3                   # (기본값: 3)
 
       # =========================================================================
       # Critics — 후보 궤적에 비용을 부여하는 함수들
@@ -257,6 +294,9 @@ controller_server:
         cost_weight: 3.0
         cost_power: 1
         threshold_to_consider: 1.0    # m
+        # true : 목표 yaw 오차의 부호(좌/우)를 구분하지 않고 절대값으로만 평가.
+        # false: 경로 방향에 따라 yaw 오차 부호를 구분 (기본값, 방향성 있는 정렬).
+        symmetric_yaw_tolerance: false
 
       # PathAlignCritic (가장 중요한 critic)
       # 궤적이 전체 경로와 평행하게 달릴수록 낮은 비용.
@@ -328,6 +368,45 @@ controller_server:
         collision_cost: 1000000.0
         critical_cost: 300.0
         near_goal_distance: 1.0
+
+      # =========================================================================
+      # 현재 미사용 Critics — critics 목록에 이름을 추가하면 활성화 가능
+      # =========================================================================
+
+      # TwirlingCritic
+      # 불필요한 yaw 진동(twirling) 억제.
+      # 코너에서 차량이 좌우로 흔들리거나 직선에서 사행 주행이 발생할 때 추가.
+      # TwirlingCritic:
+      #   enabled: true
+      #   cost_power: 1
+      #   cost_weight: 10.0            # (기본값: 10.0)
+
+      # VelocityDeadbandCritic
+      # 특정 속도 구간(deadband)을 회피하게 함.
+      # 예: 0~0.05 m/s 저속 크리핑 방지, 또는 특정 속도에서 진동이 발생할 때.
+      # deadband_velocities: [vx_deadband, vy_deadband, wz_deadband]
+      # VelocityDeadbandCritic:
+      #   enabled: true
+      #   cost_power: 1
+      #   cost_weight: 35.0            # (기본값: 35.0)
+      #   deadband_velocities: [0.05, 0.0, 0.05]
+
+      # ObstaclesCritic
+      # CostCritic과 달리 costmap 셀 값을 직접 읽지 않고, 내부적으로
+      # inflation 함수를 사용해 장애물 반발력(repulsion)을 계산하는 별도 critic.
+      # CostCritic과 동시에 사용하면 장애물 회피가 이중으로 적용되므로 주의.
+      # cost_scaling_factor / inflation_radius 는 costmap 설정 값과 일치시킬 것.
+      # ObstaclesCritic:
+      #   enabled: true
+      #   cost_power: 1
+      #   repulsion_weight: 1.5        # 장애물 반발력 가중치 (기본값: 1.5)
+      #   critical_weight: 20.0        # 차량 외곽선 내 진입 패널티 (기본값: 20.0)
+      #   collision_cost: 10000.0      # 충돌 셀 통과 패널티 (기본값: 10000.0)
+      #   collision_margin_distance: 0.1  # m: 이 거리 이내 접근 시 collision 판정
+      #   near_goal_distance: 0.5      # m: 목표 지점 이내에서 비활성화
+      #   consider_footprint: false
+      #   cost_scaling_factor: 3.0     # costmap inflation_layer.cost_scaling_factor 와 맞출 것
+      #   inflation_radius: 1.5        # m  costmap inflation_layer.inflation_radius 와 맞출 것
 
 
 # =============================================================================
@@ -418,4 +497,4 @@ local_costmap:
 
       # RViz2 에서 costmap을 실시간으로 확인하려면 true 로 유지.
       # false: 변경된 셀만 발행 → costmap 10Hz 발행 부하 대폭 감소
-      always_send_full_costmap: false
+      always_send_full_costmap: true
