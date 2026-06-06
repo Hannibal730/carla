@@ -56,23 +56,52 @@ class CmdVelToCarla(Node):
         yaw_rad = math.radians(self._vehicle.get_transform().rotation.yaw)
         current_vx = v.x * math.cos(yaw_rad) + v.y * math.sin(yaw_rad)
 
+        is_reverse = target_vx < 0.0
+
         # ── throttle / brake: 비례 제어 ──────────────────────────────
-        err = target_vx - current_vx
-        if err > 0.0:
-            throttle = min(_KP_SPEED * err, 1.0)
-            brake = 0.0
+        if is_reverse:
+            # 후진 모드: CARLA reverse=True 상태에서 throttle > 0 → 후진 가속
+            if current_vx > 0.1:
+                # 아직 전진 중 → 완전 제동 후 기어 전환
+                throttle = 0.0
+                brake = 1.0
+            else:
+                # err < 0: 아직 목표 후진 속도에 미달 → 후진 가속
+                # err > 0: 이미 목표보다 빠르게 후진 중   → 제동
+                err = target_vx - current_vx
+                if err < 0.0:
+                    throttle = min(-_KP_SPEED * err, 1.0)
+                    brake = 0.0
+                else:
+                    throttle = 0.0
+                    brake = min(_KP_SPEED * err, 1.0)
         else:
-            throttle = 0.0
-            brake = min(-_KP_SPEED * err, 1.0)
+            # 전진 모드
+            err = target_vx - current_vx
+            if err > 0.0:
+                throttle = min(_KP_SPEED * err, 1.0)
+                brake = 0.0
+            else:
+                throttle = 0.0
+                brake = min(-_KP_SPEED * err, 1.0)
 
         # ── 자전거 모델 역변환 ────────────────────────────────────────
-        # Nav2/MPPI 표준 ROS 약속: wz > 0 = CCW = 좌회전
-        # CARLA 약속:              steer > 0 = 우회전
-        # 표준 자전거 모델 δ = atan2(wz*L, vx) 에서 δ > 0 = 좌회전 (표준 ROS),
-        # 그러나 CARLA steer > 0 = 우회전이므로 부호를 반전해야 일치한다.
-        # vx ≈ 0 이면 δ = 0 (정지 중 급선회 방지)
+        # 표준 ROS 약속: wz > 0 = CCW = 좌회전
+        # CARLA 약속:   steer > 0 = 우회전  (부호 반전 필요)
+        #
+        # 전진 (vx > 0):
+        #   δ = atan2(wz*L, vx),  CARLA steer = -δ_normalized
+        #   → steer_rad = atan2(-wz*L, vx)
+        #
+        # 후진 (vx < 0):
+        #   atan2(-wz*L, vx)에서 vx < 0 이면 atan2가 2·3사분면 값을 반환해
+        #   조향이 반전된다. |vx| = -vx 를 쓰고 wz 부호를 뒤집어 보정:
+        #   steer_rad = atan2(wz*L, -vx)   ← -vx > 0 이므로 1·4사분면
         if abs(target_vx) > 0.05:
-            steer_rad = math.atan2(-target_wz * self._wheelbase, target_vx)
+            if not is_reverse:
+                steer_rad = math.atan2(-target_wz * self._wheelbase, target_vx)
+            else:
+                steer_rad = math.atan2(target_wz * self._wheelbase, -target_vx)
         else:
             steer_rad = 0.0
 
@@ -83,9 +112,12 @@ class CmdVelToCarla(Node):
         ctrl.throttle = float(throttle)
         ctrl.brake = float(brake)
         ctrl.steer = float(steer)
+        ctrl.reverse = is_reverse          # 후진 기어 — 반드시 명시적으로 설정
         self._vehicle.apply_control(ctrl)
         self.get_logger().info(
-            f'wz={target_wz:+.3f} steer={steer:+.3f} vx={target_vx:.2f}',
+            f'vx={target_vx:.2f}(cur={current_vx:+.2f}) '
+            f'wz={target_wz:+.3f} steer={steer:+.3f} '
+            f'thr={throttle:.2f} brk={brake:.2f} rev={is_reverse}',
             throttle_duration_sec=0.5)
 
 

@@ -151,9 +151,9 @@ class ModeManager(Node):
         self._set_mode(Mode.PARKING)
         self.get_logger().info('[PARK] planner_server 에 경로 요청 중 ...')
 
-        if not self._planner_client.wait_for_server(timeout_sec=5.0):
+        if not self._planner_client.server_is_ready():
             self.get_logger().error(
-                '[PARK] planner_server 가 5초 내에 응답하지 않습니다. '
+                '[PARK] planner_server 가 준비되지 않았습니다. '
                 'controller.launch.py 에 planner_server 가 포함됐는지, '
                 'lifecycle_manager 가 activate 상태인지 확인하세요.')
             self._set_mode(Mode.IDLE)
@@ -195,6 +195,7 @@ class ModeManager(Node):
             path,
             on_accepted=lambda: self.get_logger().info('[PARK] 주차 goal 수락됨.'),
             on_result=self._on_parking_result,
+            controller_id='ParkingPath',   # 후진 전용 MPPI 플러그인
         )
 
     def _on_parking_result(self, future) -> None:
@@ -207,16 +208,17 @@ class ModeManager(Node):
 
     # ── 공통 유틸리티 ──────────────────────────────────────────────────────
 
-    def _send_follow_path(self, path: Path, on_accepted, on_result) -> None:
-        if not self._follow_client.wait_for_server(timeout_sec=5.0):
+    def _send_follow_path(self, path: Path, on_accepted, on_result,
+                          controller_id: str = 'FollowPath') -> None:
+        if not self._follow_client.server_is_ready():
             self.get_logger().error(
-                'controller_server/follow_path 가 5초 내에 응답하지 않습니다. '
+                'controller_server/follow_path 가 준비되지 않았습니다. '
                 'lifecycle_manager 가 activate 상태인지 확인하세요.')
             return
 
         goal = FollowPath.Goal()
         goal.path = path
-        goal.controller_id = 'FollowPath'
+        goal.controller_id = controller_id
 
         future = self._follow_client.send_goal_async(goal)
         future.add_done_callback(

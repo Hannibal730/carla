@@ -18,7 +18,7 @@
 | [10](#10-구현-컴포넌트-상세) | 구현 컴포넌트 상세 |
 | [11](#11-레퍼런스-맵-제작-mppi-추종-경로-생성) | 레퍼런스 맵 제작 |
 | [12](#12-시스템-실행-매뉴얼) | 시스템 실행 매뉴얼 |
-| [13](#13-파라미터-상세-설명-및-튜닝-가이드) | 파라미터 상세 설명 및 튜닝 가이드 |
+| [13](#13-파라미터-상세-설명-및-튜닝-가이드) | 파라미터 상세 설명 및 튜닝 가이드 (13.7: ParkingPath 후진 전용 플러그인 포함) |
 | [14](#14-tf-시간적-허용-오차-tf-temporal-tolerance) | TF 시간적 허용 오차 |
 
 ---
@@ -1350,26 +1350,62 @@ MPPI가 출력하는 `/cmd_vel` (`geometry_msgs/Twist`)을 CARLA `VehicleControl
 
 ##### 속도 → throttle / brake (P 제어)
 
+전진/후진 방향에 따라 분기한다. `ctrl.reverse` 설정이 핵심으로, 이를 누락하면 CARLA가 전진 기어 상태를 유지해 후진 명령이 완전히 무시된다.
+
 ```text
-err = target_vx − current_vx
-if err > 0:  throttle = min(KP_SPEED × err, 1.0),  brake = 0
-else:        throttle = 0,  brake = min(−KP_SPEED × err, 1.0)
+is_reverse = (target_vx < 0)
+
+[전진 모드] ctrl.reverse = False
+  err = target_vx − current_vx
+  err > 0 → throttle = min(KP × err, 1),  brake = 0
+  err ≤ 0 → throttle = 0,  brake = min(−KP × err, 1)
+
+[후진 모드] ctrl.reverse = True
+  current_vx > 0.1 → 아직 전진 중: throttle=0, brake=1  (완전 제동 후 기어 전환)
+  else:
+    err = target_vx − current_vx   (둘 다 음수)
+    err < 0 → throttle = min(−KP × err, 1),  brake = 0   (후진 가속)
+    err ≥ 0 → throttle = 0,  brake = min(KP × err, 1)    (후진 감속)
 ```
 
-`KP_SPEED = 0.8` 기본값. 오버슈트(속도 초과 후 급감속) 발생 시 0.5로 낮춘다.
+`KP_SPEED = 0.8` 기본값. 오버슈트 발생 시 0.5로 낮춘다.
+
+> **후진 P 제어 부호 이유**: `target_vx = −1.0`, `current_vx = 0.0` 이면 `err = −1.0` (음수).
+> 이 시점은 "아직 목표 후진 속도에 미달" 상태이므로 스로틀을 밟아야 한다.
+> 전진 P 제어와 반대로 `err < 0 → throttle` 이 올바른 방향이다.
 
 ##### yaw rate → 조향각 (자전거 모델 역변환)
 
+전진과 후진에서 `atan2`의 4사분면 처리가 달라야 한다.
+
 ```text
-δ = atan2(-wz × L, vx)      (단위: rad)
-steer = clip(δ / max_steer_rad, −1, 1)   (CARLA 정규화값)
+[전진] vx > 0:
+  δ = atan2(−wz × L, vx)        → 1·4사분면, 부호 정상
+  steer = clip(δ / max_steer_rad, −1, 1)
+
+[후진] vx < 0:
+  atan2(−wz × L, vx) 에서 vx < 0 이면 atan2가 2·3사분면 (±90°~±180°)
+  → 최대 조향각(≈±0.6 rad)을 크게 초과해 클리핑 → 조향이 항상 최대로 고착
+
+  올바른 후진 공식: δ = atan2(+wz × L, −vx)
+    −vx > 0 이므로 atan2가 1·4사분면으로 돌아옴
+    wz 부호를 반전해 경로 회전 방향과 조향 방향을 일치시킴
 ```
 
-> **부호 반전 이유:** ROS/MPPI 표준에서 `wz > 0 = CCW = 좌회전`이지만 CARLA에서는 `steer > 0 = 우회전`이므로 wz에 `-1`을 곱해 방향을 일치시킨다.
+수식으로 정리:
+
+| 상황 | 공식 |
+| :--- | :--- |
+| 전진 (`vx > 0`) | `δ = atan2(−wz × L, vx)` |
+| 후진 (`vx < 0`) | `δ = atan2(+wz × L, −vx)` |
+| 정지 (`abs(vx) < 0.05`) | `δ = 0` (정지 중 급선회 방지) |
+
+> **부호 반전 이유 (전진):** ROS/MPPI 표준에서 `wz > 0 = CCW = 좌회전`이지만 CARLA에서는 `steer > 0 = 우회전`이므로 wz에 `-1`을 곱해 방향을 일치시킨다.
+>
+> **부호 이중 반전 (후진):** 후진 시 핸들을 오른쪽으로 꺾으면 차의 경로는 왼쪽으로 휜다. 이 물리적 반전을 보정하기 위해 wz 부호와 vx 부호를 모두 반전한다.
 
 * `L`: 축간거리(wheelbase). CLI `--wheelbase` 로 지정 (기본값: microlino 1.47 m).
 * `max_steer_rad`: 실행 시 `vehicle.get_physics_control().wheels[:2]`에서 자동 조회.
-* `vx < 0.05 m/s` (거의 정지) 이면 `δ = 0` → 정지 중 급선회 방지.
 
 #### 실행 방법
 
@@ -1458,22 +1494,36 @@ PARKING ────────────────── ComputePathToPose
 ② 현재 CSV FollowPath goal 취소 (cancel_goal_async)
       ↓ 취소 확인 후
 
-③ planner_server.wait_for_server(timeout_sec=5.0)
+③ planner_server.server_is_ready() 확인
       ↓ ComputePathToPose goal 전송
-         goal.goal      = goal_pose (위치 + heading 포함)
+         goal.goal       = goal_pose (위치 + heading 포함)
          goal.planner_id = 'GridBased'  (SmacPlannerHybrid REEDS_SHEPP)
-         goal.use_start  = False         (현재 로봇 위치를 시작점으로 사용)
+         goal.use_start  = False        (현재 로봇 위치를 시작점으로 사용)
 
 ④ 경로 계산 완료 → path (nav_msgs/Path) 수신
       ↓ 경로가 비어있으면 → IDLE → CSV 복귀
 
-⑤ controller_server.wait_for_server(timeout_sec=5.0)
+⑤ controller_server.server_is_ready() 확인
       ↓ FollowPath goal 전송 (계산된 주차 경로)
+         controller_id = 'ParkingPath'  ← 후진 전용 MPPI 플러그인
 
 ⑥ 주차 FollowPath 완료 (status 4/5/6 무관) → IDLE → CSV 복귀
 ```
 
 > **화살표 방향과 주차 heading**: RViz에서 드래그한 화살표 머리 방향 = 차량이 도착했을 때 전면이 향하는 방향. SmacPlannerHybrid(REEDS_SHEPP)가 이 최종 heading을 반드시 만족하는 경로를 계산하므로, 화살표 방향을 정확히 지정해야 원하는 진입 방향으로 주차된다.
+>
+> **controller_id 분리 이유**: CSV 추종에는 `FollowPath`(전진 허용, `vx_max=5.0`), 주차에는 `ParkingPath`(후진 전용, `vx_max=0.0`)를 사용해 런타임 파라미터 변경 없이 모드를 전환한다. controller_server는 두 플러그인을 동시에 activate하고, `FollowPath.Goal.controller_id` 필드로 어느 플러그인을 사용할지 지정한다.
+
+##### 주차 성공 판별 기준
+
+Nav2 `SimpleGoalChecker`가 다음 두 조건을 동시에 만족할 때 성공 판정을 내린다:
+
+| 조건 | 설정값 | 기준점 |
+| :--- | :---: | :--- |
+| 위치 오차 | 0.5 m 이내 | `base_link` 원점 (후륜축 중심) |
+| heading 오차 | 0.3 rad (≈17°) 이내 | 화살표 방향 대비 차량 yaw |
+
+`base_link` 원점이 **후륜축 중심**이므로, RViz에서 클릭한 위치는 "후륜축이 도달해야 할 좌표"다. 차량 뒤범퍼를 특정 지점에 붙이려면 뒤범퍼~후륜축 거리(약 0.5~0.7 m)만큼 앞으로 이동한 지점을 클릭해야 한다.
 
 ---
 
@@ -1510,9 +1560,9 @@ ROS 2 `GoalStatus` 표준값 (`action_msgs/msg/GoalStatus`):
 
 ---
 
-#### `wait_for_server` 사용 이유
+#### `server_is_ready()` — 논블로킹 서버 확인
 
-`server_is_ready()` (timeout=0)는 DDS 발견 이전에 호출되면 즉시 `False`를 반환한다. 이 경우 `_start_parking()`이 즉시 종료되어 PARKING → IDLE 전환이 수 ms 만에 일어나고, 1초 타이머 기반 `/mode_status` 발행에서 PARKING 상태가 관측되지 않는 버그가 발생한다. `wait_for_server(timeout_sec=5.0)`으로 DDS 발견을 충분히 기다린다.
+`_start_parking()` 및 `_send_follow_path()` 내부에서 `server_is_ready()`(비동기, 즉시 반환)로 서버 준비 여부를 확인한다. 콜백 컨텍스트 내에서 `wait_for_server(timeout_sec=N)` (블로킹 호출)을 사용하면 SingleThreadedExecutor 전체가 N초간 멈추어 타이머 등 모든 콜백이 중단되는 문제가 발생한다. 이로 인해 PARKING 상태가 mode_status에 기록되지 않고 IDLE로 즉시 전환되는 버그가 생긴다. 서버가 준비되지 않은 경우(lifecycle_manager가 아직 activate 중)에는 에러를 로깅하고 IDLE로 복귀한다.
 
 ---
 
@@ -3174,6 +3224,78 @@ ctrl.steer = float(self._smooth_steer)
 | 1.0 | 필터 없음 (현재 상태) | MPPI 진동 100% 전달 |
 
 > `wz_std` 감소·`temperature` 감소로도 MPPI 수준의 진동을 줄일 수 있지만, EMA 필터는 물리 레벨의 마지막 방어선이다. MPPI 파라미터 튜닝 후에도 미세한 물리 진동이 남는다면 `_EMA_ALPHA = 0.5` 적용을 권장한다.
+
+---
+
+### 13.7 `ParkingPath` — 후진 전용 MPPI 플러그인
+
+파일: `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml`
+
+`FollowPath`와 별도로 정의된 MPPI 플러그인으로, **RViz "2D Goal Pose" 주차 시에만** `controller_id='ParkingPath'`로 지정되어 사용된다. `controller_server`는 두 플러그인을 동시에 activate하고, `FollowPath.Goal.controller_id` 필드로 어느 플러그인을 사용할지 동적으로 선택한다.
+
+#### 설계 목적
+
+CSV 추종 중에는 전진 능력이 필요하지만 주차 중에는 무조건 후진만 허용해야 한다. MPPI 파라미터를 런타임에 동적으로 변경하면 (`SetParameters` 서비스 호출) MPPI가 configure 시점에만 파라미터를 읽어 반영되지 않는다. 따라서 configure 시점에 이미 후진 전용으로 고정된 별도 플러그인을 정의하는 방식이 가장 안정적이다.
+
+#### `FollowPath` vs `ParkingPath` 파라미터 비교
+
+| 파라미터 | FollowPath | ParkingPath | 변경 이유 |
+| :--- | :---: | :---: | :--- |
+| `vx_max` | 5.0 m/s | **0.0 m/s** | 전진 완전 차단 — MPPI가 `vx > 0` 궤적 샘플링 안 함 |
+| `vx_min` | −2.0 m/s | −2.0 m/s | 최대 후진 속도 동일 |
+| `PreferForwardCritic` | 포함 (weight 5.0) | **제거** | 후진 패널티 없애야 MPPI가 후진 선택 가능 |
+| `PathAngleCritic.forward_preference` | true | **false** | 후진 경로 방향 기준 heading 정렬 허용 |
+| 나머지 Critics | — | 동일 | CostCritic·GoalCritic 등 후진에도 그대로 필요 |
+
+#### `vx_max = 0.0` 동작 원리
+
+MPPI는 매 제어 주기마다 `vx` 값을 `[vx_min, vx_max] = [−2.0, 0.0]` 범위로 클리핑한다. 이전 제어 주기의 warm-start 시퀀스가 양수(`vx > 0`)이더라도 이 클리핑으로 강제로 0 이하가 되어, MPPI는 처음부터 후진 궤적만 평가하게 된다.
+
+#### `PreferForwardCritic` 제거 이유
+
+`PreferForwardCritic`은 후진 궤적(`vx < 0`)에 `cost_weight × |vx|` 패널티를 부여한다. `FollowPath`에서는 CSV 경로 추종 중 불필요한 후진을 억제하는 역할을 한다. `ParkingPath`에서 이를 그대로 유지하면, SmacPlannerHybrid가 계산한 후진 경로를 MPPI가 따르려 해도 `PreferForwardCritic`이 모든 후진 궤적에 패널티를 부여해 결국 vx ≈ 0 (정지) 궤적이 최적으로 선택되는 문제가 생긴다.
+
+#### 후진 주차 전체 흐름
+
+```text
+RViz "2D Goal Pose" 클릭 (G키 단축키)
+  ↓ /goal_pose (PoseStamped) 발행
+    frame_id = RViz Fixed Frame (utm 또는 odom 권장)
+    position = 후륜축이 도달해야 할 좌표
+    orientation = 주차 완료 시 차량 전면 방향
+
+mode_manager._goal_pose_cb()
+  ↓ 현재 CSV FollowPath 취소
+  ↓ _start_parking(goal_pose)
+    planner_server.server_is_ready() 확인
+    ComputePathToPose {planner_id='GridBased'} 전송
+      → SmacPlannerHybrid (REEDS_SHEPP) 경로 계산
+      → Reeds-Shepp 곡선: 전진·후진 혼합 또는 순수 후진 경로 반환
+
+  ↓ _on_plan_result(path)
+    _send_follow_path(path, controller_id='ParkingPath')
+      → controller_server: ParkingPath 플러그인 실행
+        vx_max=0 → 전진 클리핑 → 후진 궤적만 평가
+        PathFollowCritic: 경로 앞 waypoint를 후진으로 추적
+        CostCritic: 후진 경로상 장애물 회피
+        GoalCritic: 목표 도달 유도
+
+  ↓ SimpleGoalChecker 성공 판정
+    base_link ↔ 목표 거리 ≤ 0.5 m
+    yaw 오차 ≤ 0.3 rad (≈17°)
+
+  ↓ _on_parking_result()
+    _resume_csv() → IDLE → CSV_FOLLOWING 자동 복귀
+```
+
+#### 주차 실패 시 확인 사항
+
+| 증상 | 원인 | 확인 방법 |
+| :--- | :--- | :--- |
+| 주차 경로 계산 실패 (빈 경로) | global_costmap 미초기화 또는 목표가 LETHAL 셀 내부 | `ros2 topic echo /global_costmap/costmap` |
+| 차량 정지 후 미동 없음 | `cmd_vel_to_carla` 후진 처리 누락 (`ctrl.reverse=False`) | `ros2 topic echo /cmd_vel` 으로 vx < 0 확인 |
+| 주차 후 복귀 안 됨 | `_on_parking_result` 미호출 (action 응답 없음) | `ros2 topic echo /mode_status` 로 PARKING 지속 확인 |
+| RViz Fixed Frame ≠ utm | goal_pose TF 변환 실패 → planner 즉시 실패 | `/goal_pose` echo의 `frame_id` 확인 |
 
 ---
 

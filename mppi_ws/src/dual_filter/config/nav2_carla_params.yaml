@@ -58,7 +58,7 @@ controller_server:
     # ── 플러그인 목록 ─────────────────────────────────────────────────────────
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins:     ["goal_checker"]
-    controller_plugins:       ["FollowPath"]
+    controller_plugins:       ["FollowPath", "ParkingPath"]
     path_handler_plugins:     ["PathHandler"]
 
     # =========================================================================
@@ -411,6 +411,121 @@ controller_server:
       #   cost_scaling_factor: 3.0     # costmap inflation_layer.cost_scaling_factor 와 맞출 것
       #   inflation_radius: 1.5        # m  costmap inflation_layer.inflation_radius 와 맞출 것
 
+    # =========================================================================
+    # ParkingPath — 후진 전용 MPPI Controller 플러그인
+    # RViz "2D Goal Pose" 클릭 → 주차 시 이 플러그인이 사용됨.
+    # vx_max=0.0 으로 전진 완전 차단 → MPPI가 후진 궤적만 샘플링.
+    # PreferForwardCritic 비활성화 → 후진 패널티 없음.
+    # 나머지 파라미터는 FollowPath 와 동일.
+    # =========================================================================
+    ParkingPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+
+      max_robot_pose_search_dist: 30.0
+
+      prune_distance: 5.0
+      transform_tolerance: 0.5
+      reset_period: 1.0
+
+      time_steps: 40
+      model_dt:   0.1
+      batch_size: 1000
+      open_loop: false
+
+      # 전진 완전 차단 — MPPI 가 vx=0~+x 궤적을 샘플링하지 않음
+      vx_max:  0.0                     # m/s  ← 후진 전용: 전진 불가
+      vx_min: -2.0                     # m/s  (최대 후진 속도)
+      wz_max:  1.5                     # rad/s
+
+      vx_std: 0.3
+      wz_std: 0.3
+
+      iteration_count: 1
+      retry_attempt_limit: 1
+      temperature: 0.3
+      gamma: 0.015
+      visualize: true
+      regenerate_noises: true
+
+      motion_model: "Ackermann"
+      ackermann:
+        plugin: "mppi::AckermannMotionModel"
+        min_turning_r: 3.3
+
+      TrajectoryValidator:
+        plugin: "mppi::DefaultOptimalTrajectoryValidator"
+        collision_lookahead_time: 2.0
+        consider_footprint: false
+
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+
+      critics:
+        [
+          "ConstraintCritic",
+          "CostCritic",
+          "GoalCritic",
+          "GoalAngleCritic",
+          "PathAlignCritic",
+          "PathFollowCritic",
+          "PathAngleCritic",
+          # PreferForwardCritic 제거 — 후진 패널티 없애야 후진만 함
+        ]
+
+      ConstraintCritic:
+        enabled: true
+        cost_weight: 4.0
+        cost_power: 1
+
+      GoalCritic:
+        enabled: true
+        cost_weight: 5.0
+        cost_power: 1
+        threshold_to_consider: 2.0
+
+      GoalAngleCritic:
+        enabled: true
+        cost_weight: 3.0
+        cost_power: 1
+        threshold_to_consider: 1.0
+        symmetric_yaw_tolerance: false
+
+      PathAlignCritic:
+        enabled: true
+        cost_weight: 14.0
+        cost_power: 1
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+
+      PathFollowCritic:
+        enabled: true
+        cost_weight: 5.0
+        cost_power: 1
+        offset_from_furthest: 5
+
+      PathAngleCritic:
+        enabled: true
+        cost_weight: 2.0
+        cost_power: 1
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.2
+        # forward_preference: false 로 설정해 후진 경로 방향 정렬 허용
+        forward_preference: false
+
+      CostCritic:
+        enabled: true
+        cost_weight: 3.81
+        cost_power: 1
+        consider_footprint: false
+        collision_cost: 1000000.0
+        critical_cost: 300.0
+        near_goal_distance: 1.0
+
 
 # =============================================================================
 # local_costmap
@@ -456,6 +571,11 @@ local_costmap:
 
       # ── obstacle_layer ────────────────────────────────────────────────
       # LiDAR 포인트 클라우드를 읽어 장애물 격자 생성.
+      # 매 LiDAR 스캔마다 두 작업을 동시 수행:
+      #   ① marking   : 포인트 위치 셀 → LETHAL_OBSTACLE(254) 마킹
+      #   ② clearing  : 센서→포인트 광선 경로 셀 → FREE_SPACE(0) 클리어
+      # LiDAR FOV 밖으로 사라진 장애물은 레이캐스팅이 닿지 않아 costmap에 잔류.
+      # rolling_window 이동으로 자연 소멸됨.
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -463,39 +583,74 @@ local_costmap:
 
         lidar_2d:
           # stack.json 에 정의된 lidar_2d 센서 토픽.
-          # 채널 수: 1 (수평 2D scan), range: 40 m, 주파수: 20 Hz
+          # 채널 수: 1 (수평 2D scan), range: 20 m, 주파수: 20 Hz
           topic: /carla/car/lidar_2d/point_cloud
           data_type: PointCloud2
 
-          # 2D LiDAR → 높이 정보 없음. max_obstacle_height 넓게 설정.
-          max_obstacle_height: 2.0     # m
-          min_obstacle_height: 0.0     # m
+          # 2D LiDAR → 높이 정보 없음.
+          # 모든 포인트가 단일 수평면에 있으므로 max/min 을 넓게 설정.
+          max_obstacle_height: 2.0     # m  (이 높이 이하 포인트만 마킹)
+          min_obstacle_height: 0.0     # m  (음수 설정 시 지면 반사 노이즈 흡수)
 
-          # clearing: scan line 상의 빈 공간(포인트 없는 방향) 격자를 비움.
-          # marking:  포인트가 있는 위치의 격자를 장애물로 마킹.
-          # 두 옵션 모두 true 여야 이동하는 장애물도 올바르게 추적됨.
+          # clearing: 센서→포인트 광선 경로를 FREE_SPACE 로 클리어.
+          #   이동 장애물 잔류 방지 핵심 옵션. false 로 끄면 이미 지나간
+          #   장애물 흔적이 costmap에 계속 남아 MPPI 오동작 유발.
+          # marking:  포인트 위치를 LETHAL_OBSTACLE(254) 로 마킹.
           clearing: true
           marking:  true
 
-          # raytrace_max_range: 이 거리 이상의 격자는 레이캐스팅으로 비움.
-          # obstacle_max_range: 이 거리 이상의 포인트는 장애물로 마킹 안 함.
-          # lidar_2d range를 40→20m로 줄였으므로 함께 조정.
-          raytrace_max_range: 18.0     # m  (변경: 20→18, lidar range 20m 기준)
-          obstacle_max_range: 15.0     # m
+          # raytrace_max_range: 이 거리까지 레이캐스팅으로 빈 공간을 클리어.
+          #   lidar 유효 range 보다 2 m 작게 설정 (range 경계 노이즈 방지).
+          # obstacle_max_range: 이 거리 이상 포인트는 장애물로 마킹 안 함.
+          #   반드시 raytrace_max_range 보다 작게 유지:
+          #   마킹 범위 > 레이캐스팅 범위이면 클리어 안 된 셀에 마킹 잔류.
+          raytrace_max_range: 18.0     # m  (lidar 20 m 기준, 2 m 여유)
+          obstacle_max_range: 15.0     # m  (raytrace 보다 3 m 작게)
 
       # ── inflation_layer ───────────────────────────────────────────────
-      # 장애물 격자 주변으로 비용을 팽창시켜 MPPI에 안전 여유 공간을 부여.
+      # 장애물 격자 주변으로 비용 그라디언트를 생성해 MPPI(CostCritic)에
+      # 안전 여유 공간을 부여한다.
+      #
+      # 셀 비용 값 규격:
+      #   0          = FREE_SPACE     (완전 자유)
+      #   1 ~ 252    = 팽창 구역      (거리에 따른 지수 감쇠)
+      #   253        = INSCRIBED      (차량 중심이 장애물 외곽선에 닿는 지점)
+      #   254        = LETHAL         (실제 장애물 셀)
+      #
+      # 비용 계산 공식:
+      #   cost(d) = 252 × exp(−cost_scaling_factor × (d − robot_radius))
+      #   d: 장애물까지 거리 (m), 적용 범위: robot_radius < d ≤ inflation_radius
+      #
+      # 수치 예시 (robot_radius=1.5, cost_scaling_factor=3.0, inflation_radius=2.5):
+      #   d=1.5 m (robot_radius 경계) → 253 (INSCRIBED)
+      #   d=1.6 m                     → 252 × e^(−3.0×0.1) ≈ 187
+      #   d=1.8 m                     → 252 × e^(−3.0×0.3) ≈ 103
+      #   d=2.0 m                     → 252 × e^(−3.0×0.5) ≈  56
+      #   d=2.5 m (inflation_radius)  → ≈ 0   (FREE)
+      #
+      # RViz2 costmap 색상 의미:
+      #   파란색 계열 (0)       = 자유 공간
+      #   하늘~초록 (1~127)    = 팽창 저비용
+      #   노란~주황 (128~252)  = 팽창 고비용
+      #   빨간색 (253)          = INSCRIBED
+      #   흰색/보라 (254)       = LETHAL (실제 장애물)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
 
-        # inflation_radius: 장애물에서 이 반경 이내까지 비용 팽창.
+        # inflation_radius: 장애물에서 비용이 팽창되는 최대 반경.
         # 계산 근거: microlino 차폭(1.475 m) / 2 + 안전 여유(0.76 m) ≈ 1.5 m
-        # 값이 크면: MPPI가 장애물을 더 넓게 회피 (안전하지만 좁은 통로 통과 불가)
-        # 값이 작으면: 좁은 통로 통과 가능하지만 충돌 여유 감소
+        # 이 값이 robot_radius 와 같으면 팽창 구역 없이 INSCRIBED만 존재.
+        # 올리면: MPPI가 장애물을 더 넓게 회피 (안전하지만 좁은 통로 통과 불가)
+        # 낮추면: 좁은 통로 통과 가능; 충돌 여유 감소
         inflation_radius: 1.5          # m  ← 차량 폭 기준으로 조정 필요
-        # cost_scaling_factor: 거리에 따른 비용 감소 비율 (지수 decay).
-        # 높을수록: 장애물 가까이서만 높은 비용 (좁은 팽창 효과)
-        # 낮을수록: 멀리서부터 완만하게 비용 감소 (넓은 팽창 효과)
+
+        # cost_scaling_factor: 거리에 따른 비용 감소 속도 (지수 감쇠 계수 λ).
+        # 높을수록: 비용이 가파르게 감소 → 장애물 바로 옆만 고비용 (좁은 회피 구역)
+        # 낮을수록: 비용이 완만하게 감소 → 멀리서부터 고비용 (넓은 회피 구역)
+        # 예) 장애물에서 2.0 m 떨어진 셀의 비용 (robot_radius=1.5):
+        #   cost_scaling_factor=1.0 → 252 × e^(−0.5) ≈ 153 (고비용 구역 넓음)
+        #   cost_scaling_factor=3.0 → 252 × e^(−1.5) ≈  56 (현재)
+        #   cost_scaling_factor=6.0 → 252 × e^(−3.0) ≈  13 (장애물 근처만 고비용)
         cost_scaling_factor: 3.0
 
       # RViz2 에서 costmap을 실시간으로 확인하려면 true 로 유지.
@@ -557,37 +712,58 @@ planner_server:
 
 # =============================================================================
 # global_costmap
-# planner_server 가 경로 계산 시 사용하는 전역 장애물 지도.
+# planner_server(SmacPlannerHybrid) 가 주차 경로를 계산할 때 사용하는
+# 전역 장애물 지도.
+#
+# local_costmap 과의 차이:
+#   local_costmap : MPPI 가 매 제어 주기(100 ms)마다 장애물 회피에 사용.
+#                   rolling window, 20 m × 20 m, 10 Hz 갱신.
+#   global_costmap: planner_server 가 경로 계산 시 1회 참조.
+#                   rolling window, 넓은 범위, 2 Hz 갱신으로 충분.
+#
+# global_frame = utm 이유:
+#   CSV 경로 및 주차 목표(goal_pose) 가 utm 프레임으로 발행되므로
+#   플래너가 같은 프레임에서 경로를 탐색해야 좌표 변환 없이 일관성 유지.
+#   RViz 에서 "2D Goal Pose" 클릭 시 Fixed Frame 이 utm 이어야
+#   goal_pose.header.frame_id = "utm" 으로 발행되어 TF 변환 실패를 방지.
+#
 # 정적 지도(map_server) 없이 LiDAR 실시간 장애물만으로 운용.
+# 차량 주변 LiDAR 가 인식한 장애물만 반영되므로, 시야 밖 장애물은
+# 경로 계획에서 고려되지 않는다.
 # =============================================================================
 global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: true
 
-      # planner_server 는 global_costmap 기준으로 경로를 탐색함.
+      # planner_server 는 global_costmap 기준 좌표계에서 경로를 탐색한다.
+      # RViz Fixed Frame 이 이 값과 다르면 goal_pose TF 변환 실패 → 경로 계산 실패.
       global_frame: utm
       robot_base_frame: base_link
 
-      # 경로 계산 빈도는 낮아도 됨 (주차 요청 시 1회 계산).
+      # 경로 계산은 주차 요청 시 1회만 수행되므로 갱신 주기가 낮아도 됨.
+      # 2 Hz 갱신: 주차 요청 직전 최신 LiDAR 스캔 1~2회를 반영.
       update_frequency: 2.0            # Hz
       publish_frequency: 1.0           # Hz
 
-      # 롤링 창: 로봇 중심으로 이동 (고정 원점 없음).
-      # 없으면 costmap 원점이 UTM (0,0)에 고정되어 로봇이 맵 바깥에 위치함.
+      # rolling_window: true — costmap 원점이 로봇 중심을 따라 이동.
+      # false 로 설정하면 원점이 utm (0,0) 에 고정되어 로봇이 맵 바깥에 위치함.
       rolling_window: true
 
-      # SmacPlannerHybrid 탐색 범위에 맞게 충분히 크게 설정.
-      # 200 m × 200 m @ 0.2 m/cell = 1000 × 1000 셀
+      # 맵 크기: 주차 기동에 필요한 탐색 거리를 충분히 커버해야 함.
+      # SmacPlannerHybrid 의 max_planning_time(5 s) 동안 탐색하는 최대 반경 기준.
+      # 200 m × 200 m @ 0.2 m/cell = 1000 × 1000 셀.
+      # 주차 목표가 현재 위치에서 멀리 있으면(예: 50 m 이상) 크기를 늘릴 것.
       width:      200                  # m
       height:     200                  # m
-      resolution:   0.2                # m/cell
+      resolution:   0.2                # m/cell  (local의 0.1 m보다 거칠어도 됨)
 
       # TF 지연 허용 (local_costmap 과 동일하게 유지)
       transform_tolerance: 0.5         # s
 
-      # 차량 footprint (microlino: 2.5 m × 1.475 m, 후륜축 중심 기준)
-      # 아래 값은 예시. CARLA 실측 후 수정 권장.
+      # robot_radius: 차량을 원형으로 근사할 때 반경.
+      # INSCRIBED 셀 생성 기준 — 장애물에서 이 거리 이내 셀은 모두 253으로 설정.
+      # microlino: 차폭(1.475 m) / 2 + 여유 ≈ 1.5 m.
       # robot_radius 대신 footprint 를 쓰면 좁은 주차 공간 판단이 정밀해짐.
       robot_radius: 1.5                # m  (footprint 미설정 시 원형 근사)
 
@@ -601,17 +777,29 @@ global_costmap:
         lidar_2d:
           topic: /carla/car/lidar_2d/point_cloud
           data_type: PointCloud2
-          max_obstacle_height: 2.0
-          min_obstacle_height: 0.0
+          # 2D LiDAR 는 높이 정보 없음 → 수직 범위를 넓게 설정해 모든 포인트 수용.
+          max_obstacle_height: 2.0     # m
+          min_obstacle_height: 0.0     # m
+          # clearing: 레이캐스팅으로 포인트 없는 방향을 FREE_SPACE 로 클리어.
+          # marking:  LiDAR 포인트 위치를 LETHAL_OBSTACLE 로 마킹.
+          # 둘 다 true 여야 이동하는 장애물도 실시간으로 갱신됨.
           clearing: true
           marking: true
-          raytrace_max_range: 18.0
-          obstacle_max_range: 15.0
+          # raytrace_max_range: 이 거리까지 레이캐스팅 적용 (빈 공간 클리어).
+          #   lidar 유효 range(약 20 m) 보다 2~5 m 작게 설정하는 것이 권장.
+          # obstacle_max_range: 이 거리 이상의 포인트는 장애물로 마킹 안 함.
+          #   raytrace_max_range 보다 반드시 작게 유지 (빈공간 클리어 > 마킹 범위).
+          raytrace_max_range: 18.0     # m
+          obstacle_max_range: 15.0     # m
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # local_costmap 과 동일한 팽창 반경 유지
-        inflation_radius: 1.5          # m
-        cost_scaling_factor: 3.0
+        # local_costmap 과 동일한 팽창 설정 유지.
+        # planner 가 장애물 주변으로 여유 경로를 탐색하게 함.
+        # 팽창 비용 공식: cost(d) = 252 × exp(−cost_scaling_factor × (d − robot_radius))
+        inflation_radius: 1.5          # m  (local_costmap 과 동일)
+        cost_scaling_factor: 3.0       # (local_costmap 과 동일)
 
-      always_send_full_costmap: false  # global_costmap 은 트래픽 절약
+      # false: 변경된 셀만 발행 → global_costmap 트래픽 절약.
+      # (global_costmap 은 RViz 시각화 우선순위가 낮으므로 false 권장)
+      always_send_full_costmap: false
