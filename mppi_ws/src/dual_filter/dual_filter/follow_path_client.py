@@ -195,7 +195,8 @@ class ModeManager(Node):
             path,
             on_accepted=lambda: self.get_logger().info('[PARK] 주차 goal 수락됨.'),
             on_result=self._on_parking_result,
-            controller_id='ParkingPath',   # 후진 전용 MPPI 플러그인
+            controller_id='ParkingPath',          # 주차 전용 MPPI 플러그인 (전진·후진 혼합)
+            goal_checker_id='parking_goal_checker',  # 정밀 정렬용 엄격한 tolerance
         )
 
     def _on_parking_result(self, future) -> None:
@@ -209,7 +210,8 @@ class ModeManager(Node):
     # ── 공통 유틸리티 ──────────────────────────────────────────────────────
 
     def _send_follow_path(self, path: Path, on_accepted, on_result,
-                          controller_id: str = 'FollowPath') -> None:
+                          controller_id: str = 'FollowPath',
+                          goal_checker_id: str = 'goal_checker') -> None:
         if not self._follow_client.server_is_ready():
             self.get_logger().error(
                 'controller_server/follow_path 가 준비되지 않았습니다. '
@@ -219,6 +221,7 @@ class ModeManager(Node):
         goal = FollowPath.Goal()
         goal.path = path
         goal.controller_id = controller_id
+        goal.goal_checker_id = goal_checker_id
 
         future = self._follow_client.send_goal_async(goal)
         future.add_done_callback(

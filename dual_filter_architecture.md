@@ -18,7 +18,7 @@
 | [10](#10-구현-컴포넌트-상세) | 구현 컴포넌트 상세 |
 | [11](#11-레퍼런스-맵-제작-mppi-추종-경로-생성) | 레퍼런스 맵 제작 |
 | [12](#12-시스템-실행-매뉴얼) | 시스템 실행 매뉴얼 |
-| [13](#13-파라미터-상세-설명-및-튜닝-가이드) | 파라미터 상세 설명 및 튜닝 가이드 (13.7: ParkingPath 후진 전용 플러그인 포함) |
+| [13](#13-파라미터-상세-설명-및-튜닝-가이드) | 파라미터 상세 설명 및 튜닝 가이드 (13.7: ParkingPath 주차 전용 플러그인 포함) |
 | [14](#14-tf-시간적-허용-오차-tf-temporal-tolerance) | TF 시간적 허용 오차 |
 
 ---
@@ -1333,7 +1333,8 @@ ros2 run serial_bridge serial_bridge
 | `costmap_update_timeout` | 0.30 s | sim time TF 지연 흡수 |
 | `failure_tolerance` | 1.5 s | 유효 cmd_vel 미생성 허용 시간 |
 | `progress_checker` | `SimpleProgressChecker` | 10 s 동안 0.5 m 이상 이동 없으면 stuck 판정 |
-| `goal_checker` | `SimpleGoalChecker` | 목표 0.5 m / 0.3 rad 이내 도달 시 성공 |
+| `goal_checker` | `SimpleGoalChecker` | CSV 추종 전용 — 목표 0.5 m / 0.3 rad(≈17°) 이내 도달 시 성공 |
+| `parking_goal_checker` | `SimpleGoalChecker` | 주차 전용 — 0.25 m / 0.1 rad(≈6°) 엄격한 허용값. 화살표 직선 위 정렬 강제 |
 | `PathHandler` | `FeasiblePathHandler` | 이미 지나친 waypoint prune_distance 5.0 m 이상이면 제거 |
 
 > MPPI 플러그인·Critics·local_costmap 파라미터 상세: [Section 13](#13-파라미터-상세-설명-및-튜닝-가이드)
@@ -1505,14 +1506,14 @@ PARKING ────────────────── ComputePathToPose
 
 ⑤ controller_server.server_is_ready() 확인
       ↓ FollowPath goal 전송 (계산된 주차 경로)
-         controller_id = 'ParkingPath'  ← 후진 전용 MPPI 플러그인
+         controller_id = 'ParkingPath'  ← 주차 전용 MPPI 플러그인 (전진·후진 혼합)
 
 ⑥ 주차 FollowPath 완료 (status 4/5/6 무관) → IDLE → CSV 복귀
 ```
 
 > **화살표 방향과 주차 heading**: RViz에서 드래그한 화살표 머리 방향 = 차량이 도착했을 때 전면이 향하는 방향. SmacPlannerHybrid(REEDS_SHEPP)가 이 최종 heading을 반드시 만족하는 경로를 계산하므로, 화살표 방향을 정확히 지정해야 원하는 진입 방향으로 주차된다.
 >
-> **controller_id 분리 이유**: CSV 추종에는 `FollowPath`(전진 허용, `vx_max=5.0`), 주차에는 `ParkingPath`(후진 전용, `vx_max=0.0`)를 사용해 런타임 파라미터 변경 없이 모드를 전환한다. controller_server는 두 플러그인을 동시에 activate하고, `FollowPath.Goal.controller_id` 필드로 어느 플러그인을 사용할지 지정한다.
+> **controller_id 분리 이유**: CSV 추종에는 `FollowPath`(`vx_max=5.0`, `PreferForwardCritic` 포함), 주차에는 `ParkingPath`(`vx_max=2.0`, `PreferForwardCritic` 제거)를 사용해 런타임 파라미터 변경 없이 모드를 전환한다. 주차는 SmacPlannerHybrid(REEDS_SHEPP)가 전진·후진 혼합 경로를 계획하므로 MPPI도 두 방향 모두 허용해야 하지만, CSV 추종 중 불필요한 후진을 억제하는 `PreferForwardCritic`은 제거해 패널티 없이 경로를 따른다.
 
 ##### 주차 성공 판별 기준
 
@@ -1964,9 +1965,7 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
 ```bash
 cd ~/carla
 source .venv/bin/activate
-python PythonAPI/util/config.py --map Town01_Opt
-python PythonAPI/examples/manual_control.py \
-  --rolename car --filter vehicle.micro.microlino --generation 2 --sync
+python PythonAPI/util/config.py --map Town01_Opt && python PythonAPI/examples/manual_control.py --rolename car --filter vehicle.micro.microlino --generation 2 --sync
 ```
 
 #### 터미널 3 — 센서 브리지 (`/clock` 포함)
@@ -3227,7 +3226,7 @@ ctrl.steer = float(self._smooth_steer)
 
 ---
 
-### 13.7 `ParkingPath` — 후진 전용 MPPI 플러그인
+### 13.7 `ParkingPath` — 주차 전용 MPPI 플러그인
 
 파일: `mppi_ws/src/dual_filter/config/nav2_carla_params.yaml`
 
@@ -3235,21 +3234,23 @@ ctrl.steer = float(self._smooth_steer)
 
 #### 설계 목적
 
-CSV 추종 중에는 전진 능력이 필요하지만 주차 중에는 무조건 후진만 허용해야 한다. MPPI 파라미터를 런타임에 동적으로 변경하면 (`SetParameters` 서비스 호출) MPPI가 configure 시점에만 파라미터를 읽어 반영되지 않는다. 따라서 configure 시점에 이미 후진 전용으로 고정된 별도 플러그인을 정의하는 방식이 가장 안정적이다.
+CSV 추종 중에는 전진이 주이지만, 주차 모드에서는 SmacPlannerHybrid(REEDS_SHEPP)가 전진·후진 혼합 최적 경로를 계획하므로 MPPI도 두 방향 모두 허용해야 한다. 또한 CSV 추종에서 불필요한 후진을 억제하는 `PreferForwardCritic`을 주차에서 유지하면 MPPI가 후진 구간에서 정지 궤적을 선택하는 문제가 생긴다. MPPI 파라미터를 런타임에 동적으로 변경하면 (`SetParameters` 서비스 호출) MPPI가 configure 시점에만 파라미터를 읽어 반영되지 않으므로, 주차 전용으로 별도 플러그인을 정의하는 방식이 가장 안정적이다.
 
 #### `FollowPath` vs `ParkingPath` 파라미터 비교
 
 | 파라미터 | FollowPath | ParkingPath | 변경 이유 |
 | :--- | :---: | :---: | :--- |
-| `vx_max` | 5.0 m/s | **0.0 m/s** | 전진 완전 차단 — MPPI가 `vx > 0` 궤적 샘플링 안 함 |
+| `vx_max` | 5.0 m/s | **2.0 m/s** | SmacPlannerHybrid REEDS_SHEPP 경로의 전진·후진 구간 모두 추종 가능 |
 | `vx_min` | −2.0 m/s | −2.0 m/s | 최대 후진 속도 동일 |
+| `goal_checker_id` | `goal_checker` | **`parking_goal_checker`** | 주차 정밀 판정용 전용 checker 사용 |
+| `GoalCritic.cost_weight` | 5.0 | **10.0** | 목표 위치 끌어당기는 힘 강화 |
+| `GoalCritic.threshold_to_consider` | 2.0 m | **3.0 m** | 더 멀리서부터 목표 수렴 유도 |
+| `GoalAngleCritic.cost_weight` | 3.0 | **8.0** | 화살표 heading 정렬 강도 대폭 강화 — 핵심 파라미터 |
+| `GoalAngleCritic.threshold_to_consider` | 1.0 m | **2.5 m** | 1 m 이내는 너무 늦음 — 2.5 m 이전부터 heading 교정 시작 |
+| `PathAlignCritic.use_path_orientations` | false | **true** | REEDS_SHEPP 경로 waypoint orientation 도 정렬 평가에 반영 |
+| `PathAngleCritic.cost_weight` | 2.0 | **4.0** | 경로 방향 추종 강화 |
 | `PreferForwardCritic` | 포함 (weight 5.0) | **제거** | 후진 패널티 없애야 MPPI가 후진 선택 가능 |
 | `PathAngleCritic.forward_preference` | true | **false** | 후진 경로 방향 기준 heading 정렬 허용 |
-| 나머지 Critics | — | 동일 | CostCritic·GoalCritic 등 후진에도 그대로 필요 |
-
-#### `vx_max = 0.0` 동작 원리
-
-MPPI는 매 제어 주기마다 `vx` 값을 `[vx_min, vx_max] = [−2.0, 0.0]` 범위로 클리핑한다. 이전 제어 주기의 warm-start 시퀀스가 양수(`vx > 0`)이더라도 이 클리핑으로 강제로 0 이하가 되어, MPPI는 처음부터 후진 궤적만 평가하게 된다.
 
 #### `PreferForwardCritic` 제거 이유
 
@@ -3273,16 +3274,19 @@ mode_manager._goal_pose_cb()
       → Reeds-Shepp 곡선: 전진·후진 혼합 또는 순수 후진 경로 반환
 
   ↓ _on_plan_result(path)
-    _send_follow_path(path, controller_id='ParkingPath')
+    _send_follow_path(path, controller_id='ParkingPath',
+                           goal_checker_id='parking_goal_checker')
       → controller_server: ParkingPath 플러그인 실행
-        vx_max=0 → 전진 클리핑 → 후진 궤적만 평가
+        vx_max=2.0, vx_min=−2.0 → 전진·후진 혼합 궤적 평가 (경로에 따라 자동 선택)
+        GoalCritic (w=10, 3 m 이내 활성): 정확한 위치로 강하게 끌어당김
+        GoalAngleCritic (w=8, 2.5 m 이내 활성): 화살표 방향으로 heading 교정
+        PathAlignCritic (use_path_orientations=true): 경로 yaw 방향 추종
         PathFollowCritic: 경로 앞 waypoint를 후진으로 추적
         CostCritic: 후진 경로상 장애물 회피
-        GoalCritic: 목표 도달 유도
 
-  ↓ SimpleGoalChecker 성공 판정
-    base_link ↔ 목표 거리 ≤ 0.5 m
-    yaw 오차 ≤ 0.3 rad (≈17°)
+  ↓ parking_goal_checker 성공 판정  (CSV 추종은 goal_checker 사용)
+    base_link ↔ 목표 거리 ≤ 0.25 m
+    yaw 오차 ≤ 0.1 rad (≈6°)  ← 화살표 직선 위 정렬 강제
 
   ↓ _on_parking_result()
     _resume_csv() → IDLE → CSV_FOLLOWING 자동 복귀

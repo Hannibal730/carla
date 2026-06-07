@@ -57,7 +57,7 @@ controller_server:
 
     # ── 플러그인 목록 ─────────────────────────────────────────────────────────
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins:     ["goal_checker"]
+    goal_checker_plugins:     ["goal_checker", "parking_goal_checker"]
     controller_plugins:       ["FollowPath", "ParkingPath"]
     path_handler_plugins:     ["PathHandler"]
 
@@ -84,6 +84,20 @@ controller_server:
       # 값이 너무 작으면 GNSS 오차로 인해 목표 도달을 못하는 상황 발생.
       xy_goal_tolerance:  0.5          # m  (수평 거리 오차 허용)
       yaw_goal_tolerance: 0.3          # rad (≈17°, 정밀 주차가 아닌 경로 추종용)
+
+    # =========================================================================
+    # parking_goal_checker
+    # ParkingPath(후진 주차) 전용 goal checker.
+    # RViz 화살표 직선 위에 차량이 정확히 위치하려면 yaw 오차를 엄격하게 제한해야 함.
+    # ─ xy_goal_tolerance: gnss 오차. 너무 작으면 로컬라이제이션 오차로 인해 주차 성공 판정이 나지 않을 수 있음.
+    # ─ yaw_goal_tolerance: 0.1 rad ≈ 6°. 화살표 방향과 차량 전면이 6° 이내로
+    #   정렬되어야 성공 판정. (0.3 rad 허용 시 차가 선 위에서 크게 비틀릴 수 있음)
+    # =========================================================================
+    parking_goal_checker:
+      stateful: true
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance:  0.05         # m
+      yaw_goal_tolerance: 0.1          # rad (≈6°, 화살표 직선 위 정렬용)
 
     # =========================================================================
     # PathHandler
@@ -412,10 +426,11 @@ controller_server:
       #   inflation_radius: 1.5        # m  costmap inflation_layer.inflation_radius 와 맞출 것
 
     # =========================================================================
-    # ParkingPath — 후진 전용 MPPI Controller 플러그인
+    # ParkingPath — 주차 전용 MPPI Controller 플러그인
     # RViz "2D Goal Pose" 클릭 → 주차 시 이 플러그인이 사용됨.
-    # vx_max=0.0 으로 전진 완전 차단 → MPPI가 후진 궤적만 샘플링.
-    # PreferForwardCritic 비활성화 → 후진 패널티 없음.
+    # SmacPlannerHybrid(REEDS_SHEPP) 가 전진·후진 혼합 경로를 계획하므로
+    # MPPI 도 전진·후진 모두 허용해야 경로를 따라갈 수 있음.
+    # PreferForwardCritic 미포함 → 전진/후진 방향을 경로에 따라 자유롭게 선택.
     # 나머지 파라미터는 FollowPath 와 동일.
     # =========================================================================
     ParkingPath:
@@ -432,8 +447,8 @@ controller_server:
       batch_size: 1000
       open_loop: false
 
-      # 전진 완전 차단 — MPPI 가 vx=0~+x 궤적을 샘플링하지 않음
-      vx_max:  0.0                     # m/s  ← 후진 전용: 전진 불가
+      # 전진·후진 모두 허용 — SmacPlannerHybrid REEDS_SHEPP 경로 실행에 필수
+      vx_max:  2.0                     # m/s  (전진 허용, CSV 추종보다 낮게 제한)
       vx_min: -2.0                     # m/s  (최대 후진 속도)
       wz_max:  1.5                     # rad/s
 
@@ -478,19 +493,29 @@ controller_server:
         cost_weight: 4.0
         cost_power: 1
 
+      # GoalCritic
+      # 최종 목표 위치로 강하게 끌어당긴다.
+      # threshold_to_consider 를 3.0 m 로 확장해 일찍부터 목표 방향으로 수렴 유도.
       GoalCritic:
         enabled: true
-        cost_weight: 5.0
+        cost_weight: 10.0            # 5.0 → 10.0: 위치 끌어당기는 힘 강화
         cost_power: 1
-        threshold_to_consider: 2.0
+        threshold_to_consider: 3.0   # 2.0 → 3.0 m: 더 멀리서부터 활성화
 
+      # GoalAngleCritic
+      # 목표 heading 으로 차량을 정렬하는 가장 중요한 critic.
+      # cost_weight 를 높여 최종 접근 시 yaw 정렬을 최우선으로 만든다.
+      # threshold_to_consider 를 확장해 2.5 m 이전부터 heading 교정 시작.
       GoalAngleCritic:
         enabled: true
-        cost_weight: 3.0
+        cost_weight: 8.0             # 3.0 → 8.0: heading 정렬 강도 대폭 강화
         cost_power: 1
-        threshold_to_consider: 1.0
+        threshold_to_consider: 2.5   # 1.0 → 2.5 m: 훨씬 일찍 heading 교정 시작
         symmetric_yaw_tolerance: false
 
+      # PathAlignCritic
+      # use_path_orientations: true — REEDS_SHEPP 경로 waypoint 의 orientation(차량 heading)
+      # 을 위치뿐 아니라 방향까지 반영해 평가 → 후진 경로에서 heading 추종 정밀도 향상.
       PathAlignCritic:
         enabled: true
         cost_weight: 14.0
@@ -499,7 +524,7 @@ controller_server:
         trajectory_point_step: 4
         threshold_to_consider: 0.5
         offset_from_furthest: 20
-        use_path_orientations: false
+        use_path_orientations: true  # false → true: 경로 waypoint orientation 도 평가에 반영
 
       PathFollowCritic:
         enabled: true
@@ -507,9 +532,10 @@ controller_server:
         cost_power: 1
         offset_from_furthest: 5
 
+      # PathAngleCritic — cost_weight 상향으로 경로 방향 추종 강화
       PathAngleCritic:
         enabled: true
-        cost_weight: 2.0
+        cost_weight: 4.0             # 2.0 → 4.0: 경로 방향 추종 강화
         cost_power: 1
         offset_from_furthest: 4
         threshold_to_consider: 0.5
