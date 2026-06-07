@@ -373,15 +373,14 @@ controller_server:
       # collision_cost: 충돌(LETHAL_OBSTACLE) 셀 통과 궤적에 부여하는 큰 패널티.
       #   매우 높게 설정해 충돌 궤적이 절대 선택되지 않도록 함.
       # critical_cost: INSCRIBED_INFLATED_OBSTACLE(차량 중심이 장애물 외곽선 위) 패널티.
-      # consider_footprint: false → 차량 중심점 기준 체크 (footprint 체크보다 빠름).
-      #   차량 폭을 고려한 정밀 회피가 필요하면 true로 변경 (계산 비용 증가).
+      # consider_footprint: true → costmap footprint 기반 충돌 체크. 차량 실제 형태 반영.
       # near_goal_distance: 목표 지점 이 거리 이내에서는 CostCritic 비활성화.
       #   목표 지점 근처에서 costmap 비용으로 인한 정지 방지.
       CostCritic:
         enabled: true
         cost_weight: 3.81
         cost_power: 1
-        consider_footprint: false
+        consider_footprint: true
         collision_cost: 1000000.0
         critical_cost: 300.0
         near_goal_distance: 1.0
@@ -555,6 +554,7 @@ controller_server:
 
 # =============================================================================
 # local_costmap
+#
 # 차량 주변 장애물 격자 지도. MPPI가 CostCritic을 통해 이 costmap을 참조해 장애물 회피.
 # =============================================================================
 local_costmap:
@@ -573,6 +573,9 @@ local_costmap:
       # MPPI가 odom 프레임에서 궤적을 롤아웃하므로 반드시 일치시킬 것.
       global_frame: odom
       robot_base_frame: base_link
+
+      # footprint: global_costmap 과 동일한 차량 실제 형태. base_link(후륜축 중심) 기준(m).
+      footprint: "[[2.1, 0.74], [2.1, -0.74], [-0.4, -0.74], [-0.4, 0.74]]"
 
       # ── 롤링 창 ──────────────────────────────────────────────────────────
       # true: 차량 중심으로 창이 이동 (local costmap 표준 설정).
@@ -738,8 +741,7 @@ planner_server:
 
 # =============================================================================
 # global_costmap
-# planner_server(SmacPlannerHybrid) 가 주차 경로를 계산할 때 사용하는
-# 전역 장애물 지도.
+# planner_server(SmacPlannerHybrid) 가 주차 경로를 계산할 때 사용하는 전역 장애물 지도.
 #
 # local_costmap 과의 차이:
 #   local_costmap : MPPI 가 매 제어 주기(100 ms)마다 장애물 회피에 사용.
@@ -748,10 +750,8 @@ planner_server:
 #                   rolling window, 넓은 범위, 2 Hz 갱신으로 충분.
 #
 # global_frame = utm 이유:
-#   CSV 경로 및 주차 목표(goal_pose) 가 utm 프레임으로 발행되므로
-#   플래너가 같은 프레임에서 경로를 탐색해야 좌표 변환 없이 일관성 유지.
-#   RViz 에서 "2D Goal Pose" 클릭 시 Fixed Frame 이 utm 이어야
-#   goal_pose.header.frame_id = "utm" 으로 발행되어 TF 변환 실패를 방지.
+#   CSV 경로 및 주차 목표(goal_pose) 가 utm 프레임으로 발행되므로 플래너가 같은 프레임에서 경로를 탐색해야 좌표 변환 없이 일관성 유지.
+#   RViz 에서 "2D Goal Pose" 클릭 시 Fixed Frame 이 utm 이어야 goal_pose.header.frame_id = "utm" 으로 발행되어 TF 변환 실패를 방지.
 #
 # 정적 지도(map_server) 없이 LiDAR 실시간 장애물만으로 운용.
 # 차량 주변 LiDAR 가 인식한 장애물만 반영되므로, 시야 밖 장애물은
@@ -787,11 +787,11 @@ global_costmap:
       # TF 지연 허용 (local_costmap 과 동일하게 유지)
       transform_tolerance: 0.5         # s
 
-      # robot_radius: 차량을 원형으로 근사할 때 반경.
-      # INSCRIBED 셀 생성 기준 — 장애물에서 이 거리 이내 셀은 모두 253으로 설정.
-      # microlino: 차폭(1.475 m) / 2 + 여유 ≈ 1.5 m.
-      # robot_radius 대신 footprint 를 쓰면 좁은 주차 공간 판단이 정밀해짐.
-      robot_radius: 1.5                # m  (footprint 미설정 시 원형 근사)
+      # footprint: 차량 실제 형태를 다각형으로 지정. base_link(후륜축 중심) 기준 좌표(m).
+      # microlino: 전장 2.52 m, 전폭 1.475 m, 후륜축 기준
+      #   전방(앞범퍼): +2.1 m  /  후방(뒷범퍼): −0.4 m  /  좌우: ±0.74 m
+      # ※ CARLA 실측 치수로 검증 후 조정 권장.
+      footprint: "[[2.1, 0.74], [2.1, -0.74], [-0.4, -0.74], [-0.4, 0.74]]"
 
       # 정적 지도 없이 LiDAR 장애물 레이어만 사용
       plugins: ["obstacle_layer", "inflation_layer"]
