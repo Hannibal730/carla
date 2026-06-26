@@ -1962,10 +1962,29 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
 
 #### 터미널 2 — 차량 스폰
 
+스폰 좌표는 `--spawn-x/--spawn-y/--spawn-z/--spawn-yaw` 인자로 지정한다(맵에 맞게 좌표만 교체).
+커스텀 맵 적용·좌표 산출 방법은 [Section 15.7](#157-step-e--section-121-연동-맵--스폰-좌표)을 참고한다.
+
+**카를라맵 (Town01_Opt) 버전:**
+
 ```bash
 cd ~/carla
 source .venv/bin/activate
-python PythonAPI/util/config.py --map Town01_Opt && python PythonAPI/examples/manual_control.py --rolename car --filter vehicle.micro.microlino --generation 2 --sync
+python PythonAPI/util/config.py --map Town01_Opt \
+  && python PythonAPI/examples/manual_control.py --rolename car \
+     --filter vehicle.micro.microlino --generation 2 --sync \
+     --spawn-x 299.4 --spawn-y 133.24 --spawn-z 0.3 --spawn-yaw 0.0
+```
+
+**만도맵 (Mando) 버전:**
+
+```bash
+cd ~/carla
+source .venv/bin/activate
+python PythonAPI/util/config.py --map Mando \
+  && python PythonAPI/examples/manual_control.py --rolename car \
+     --filter vehicle.micro.microlino --generation 2 --sync \
+     --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
 ```
 
 #### 터미널 3 — 센서 브리지 (`/clock` 포함)
@@ -3511,3 +3530,407 @@ global_ekf:
 
 > Nav2의 `transform_tolerance`와 robot_localization의 `transform_timeout`은 이름도, 의미도, 작동 방식도 다르다. 혼용하면 파라미터가 무시된다.
 
+---
+
+## 15. 커스텀 맵(RoadRunner) CARLA 적용 매뉴얼 — `Mando` 사례
+
+> **이 섹션의 목적**: MATLAB RoadRunner로 제작한 커스텀 맵(`.fbx` + `.xodr`)을 CARLA에 적용해
+> Section 12.1 자율주행/주차 스택에서 사용하는 **전 과정**을 기록한다. 맵을 수정해 다시
+> 익스포트했을 때 이 절차만 그대로 반복하면 재적용된다. **에이전트가 이 문서만 읽고 전 과정을
+> 정확히 재현할 수 있도록** 모든 명령·경로·예상 출력·함정(gotcha)을 포함한다.
+>
+> **실제 적용 사례 기준 환경** (2026-06 기준, `Mando` 맵):
+> - 입력 맵 소스: `/home/hannibal/carla/MandoParking1/` (`Mando.fbx`, `Mando.xodr`, `Mando.rrdata.xml`)
+> - 적용 결과 맵 이름: **`Mando`**, 패키지 이름: **`map_package`**
+
+---
+
+### 15.1 핵심 원리 — 왜 "소스 빌드"가 반드시 필요한가
+
+CARLA에 맵을 넣는 방법은 두 가지인데, 이 시스템에서는 **하나만 가능**하다.
+
+| 방식 | 필요 환경 | 비주얼(FBX) | 본 시스템 가능 여부 |
+| :--- | :--- | :--- | :--- |
+| **스탠드얼론 OpenDRIVE** (`config.py --xodr-path`) | 패키지 빌드만 | ❌ 도로만 절차 생성 | 가능하지만 외관·주차장 구조 손실 |
+| **풀 FBX 임포트** (`make import` → `make package`) | UE4 + **CARLA 소스 빌드** | ✅ RoadRunner 외관 보존 | **이 방법을 사용** |
+
+`~/carla`(런타임용 **패키지 빌드**, CARLA 0.9.16)는 `CarlaUE4.sh`만 있고 Unreal 소스·`Makefile`이
+없어 **FBX를 쿠킹(cook)할 수 없다**. FBX 쿠킹은 Unreal Editor가 필요하므로, 별도로 존재하는
+**CARLA 소스 빌드**에서 맵을 쿠킹해 `.tar.gz` 패키지로 만든 뒤 패키지 빌드에 끼워넣는다.
+
+#### 환경 인벤토리 (이 절차가 의존하는 자산)
+
+| 자산 | 경로 | 역할 |
+| :--- | :--- | :--- |
+| 런타임 패키지 빌드 | `/home/hannibal/carla` | Section 12.1을 실행하는 곳. 맵을 **여기에 임포트**한다 |
+| **CARLA 소스 빌드** | `/home/hannibal/carla-0.9.16-source` | `make import` / `make package` 로 FBX를 쿠킹하는 곳 |
+| Unreal Engine | `/home/hannibal/UnrealEngine_4.26` | `UE4_ROOT` 환경변수로 지정. 쿠킹 엔진 |
+| Python venv | `/home/hannibal/carla/.venv` | 기본 `python3`. carla 모듈·빌드 도구가 여기서 해석됨 |
+
+> **전제**: 소스 빌드(`carla-0.9.16-source`)는 이미 한 번 빌드되어 `Unreal/CarlaUE4/Binaries/Linux/`에
+> `libUE4Editor-CarlaUE4.so`가 존재해야 한다. 없으면 최초 `make import`가 에디터를 통째로
+> 빌드하느라 매우 오래 걸린다(수 시간).
+
+---
+
+### 15.2 전체 파이프라인 개요
+
+```text
+[RoadRunner 익스포트]
+  Mando.fbx (외관 메쉬)  +  Mando.xodr (도로망)
+        │
+        │ Step A: cp → carla-0.9.16-source/Import/  &&  make import
+        ▼
+[소스 빌드 에디터 콘텐츠]  Unreal/CarlaUE4/Content/map_package/Maps/Mando/
+  Mando.umap + OpenDrive/Mando.xodr + TM/Mando.bin + RoadRunner 머티리얼(.uasset)
+        │
+        │ Step B: make package ARGS="--packages=map_package"
+        ▼
+[배포 패키지]  Dist/map_package_<TAG>.tar.gz   (LinuxNoEditor 쿡 결과, ~260 MB)
+        │
+        │ Step C: cp → ~/carla/Import/  &&  ./ImportAssets.sh
+        ▼
+[런타임 패키지 빌드]  ~/carla/CarlaUE4/Content/map_package/Maps/Mando/
+        │
+        │ Step D: 서버 기동 → load_world('Mando') 검증
+        ▼
+[Section 12.1 연동]  Step E: 터미널 2를 --map Mando 로 + 스폰 좌표 인자(--spawn-*)
+```
+
+소요 시간(참고): Step A ≈ 5–10분, Step B ≈ 8–15분(첫 쿡, 셰이더 컴파일 포함), Step C ≈ 1–2분.
+
+---
+
+### 15.3 Step A — `make import` (FBX → 에디터 콘텐츠 쿠킹)
+
+#### A-1. 입력 파일 복사
+
+`.fbx`와 `.xodr`는 **basename이 같아야** CARLA 임포터가 한 맵으로 인식한다(`Mando.fbx` + `Mando.xodr`
+→ 맵 이름 `Mando`). `.rrdata.xml`은 **사용하지 않으므로 복사 불필요**.
+
+```bash
+cp /home/hannibal/carla/MandoParking1/Mando.fbx \
+   /home/hannibal/carla/MandoParking1/Mando.xodr \
+   /home/hannibal/carla-0.9.16-source/Import/
+```
+
+> **`.json` 메타파일 불필요**: `Util/BuildTools/Import.py`가 `Import/` 안의 `.fbx`+`.xodr` 쌍을
+> 스캔해 `map_package.json`을 **자동 생성**한다(`use_carla_materials: true` 기본). 패키지 이름은
+> 기본 `map_package`. 바꾸려면 `make import ARGS="--package=MyPkg"`.
+
+#### A-2. `make import` 실행
+
+```bash
+cd /home/hannibal/carla-0.9.16-source
+export UE4_ROOT=/home/hannibal/UnrealEngine_4.26
+make import
+```
+
+내부 동작 순서(로그로 확인 가능):
+1. 선행 빌드: `LibCarla` → `osm2odr` → `CarlaUE4Editor` → `PythonAPI` (이미 빌드돼 있으면 "up to date")
+2. UE4 커맨드릿 체인: `ImportAssets`(FBX 임포트) → `MoveAssets`(시맨틱 폴더 이동) →
+   `PrepareAssetsForCooking` → `LoadAssetMaterials`(RoadRunner 머티리얼 매칭)
+3. `Mando.xodr`를 `Content/map_package/Maps/Mando/OpenDrive/`로 복사
+4. `carla.Map().cook_in_memory_map()`으로 TM 바이너리(`TM/Mando.bin`) 생성
+
+#### A-3. ⚠️ 함정 #1 — `No module named build.__main__` (반드시 사전 처리)
+
+`make import`는 선행 타겟 `PythonAPI`를 재빌드하는데, `BuildPythonAPI.sh`가 `python3 -m build --wheel`을
+호출한다. venv에 PyPI `build` 패키지가 없으면 다음 에러로 **전체가 중단**된다:
+
+```text
+/home/hannibal/carla/.venv/bin/python3: No module named build.__main__; 'build' is a package and cannot be directly executed
+make: *** [Util/BuildTools/Linux.mk:89: PythonAPI] Error 1
+```
+
+**해결** (최초 1회):
+```bash
+python3 -m pip install build wheel
+```
+
+#### A-4. 결과 검증
+
+```bash
+ls ~/carla-0.9.16-source/Unreal/CarlaUE4/Content/map_package/Maps/Mando/
+```
+기대 산출물:
+
+| 파일 | 의미 |
+| :--- | :--- |
+| `Mando.umap` | 쿠킹된 맵 본체 |
+| `OpenDrive/Mando.xodr` | 논리 도로망 (GNSS/스폰/내비) |
+| `TM/Mando.bin` | Traffic Manager 바이너리 |
+| `Asphalt1_*.uasset`, `Concrete1_*.uasset`, `Grass2_*` 등 | RoadRunner 머티리얼 (외관) |
+
+> **`Nav/Mando.bin` 미생성은 정상/무해**: 보행자(walker) RecastNav 메시이며, 차량 자율주행·GNSS·EKF·
+> MPPI·주차와 무관하다. 보행자 NPC가 필요할 때만 별도 처리.
+
+---
+
+### 15.4 Step B — `make package` (배포용 `.tar.gz` 쿠킹)
+
+`Mando`만 단독 쿡해 패키지 빌드에 끼울 `.tar.gz`를 만든다. **인자 없는 `make package`는 모든
+Town 맵까지 전부 쿡(1~2시간)** 하므로 반드시 `--packages`로 한정한다.
+
+```bash
+cd /home/hannibal/carla-0.9.16-source
+export UE4_ROOT=/home/hannibal/UnrealEngine_4.26
+make package ARGS="--packages=map_package"
+```
+
+내부 동작: `Package.sh`가 UAT cook 커맨드릿을 실행
+(`-run=cook -map=+/Game/map_package/Maps/Mando/Mando -cooksinglepackage -targetplatform=LinuxNoEditor`)
+→ 의존 에셋 800~950개 쿡 + 셰이더 컴파일 → `tar`/`gzip` 압축.
+
+성공 시 마지막 로그: `Package.sh: Success!`
+산출물:
+```text
+/home/hannibal/carla-0.9.16-source/Dist/map_package_<TAG>.tar.gz   (~260 MB)
+```
+여기서 `<TAG>`는 소스 빌드의 git 리비전(예: `294096eb1-dirty`). **파일명은 실행 시점마다 다를 수
+있으니** 다음으로 확인:
+```bash
+ls -t ~/carla-0.9.16-source/Dist/map_package_*.tar.gz | head -1
+```
+
+#### ⚠️ 함정 #2 — `parse-options: unrecognized option '--packages=map_package'`
+
+선행 빌드 보조 스크립트(BuildUE4Plugins/Setup/BuildLibCarla 등)에도 `$(ARGS)`가 전달되는데
+이들은 `--packages`를 모른다. **getopt 경고만 찍고 무시한 뒤 정상 빌드되므로 무해**하다(`--packages`를
+실제로 소비하는 건 최종 `Package.sh`뿐). 로그에 이 경고가 여러 번 보여도 정상이다.
+
+---
+
+### 15.5 Step C — 패키지 빌드(`~/carla`)에 임포트
+
+```bash
+# 1) 쿡된 .tar.gz 를 패키지 빌드 Import 폴더로
+cp "$(ls -t ~/carla-0.9.16-source/Dist/map_package_*.tar.gz | head -1)" ~/carla/Import/
+
+# 2) 패키지 빌드 루트에서 ImportAssets.sh 실행 (tar.gz 압축해제)
+cd ~/carla
+./ImportAssets.sh
+
+# 3) (권장) Import 폴더 정리 — 다음 임포트 때 중복 추출 방지
+rm -f ~/carla/Import/map_package_*.tar.gz
+```
+
+`ImportAssets.sh`는 `Import/`의 모든 `*.tar.gz`를 `tar --keep-newer-files -xvf`로 `~/carla`에 푼다.
+tar 내부 구조가 `CarlaUE4/Content/...`, `Engine/Content/...`이므로 `~/carla` 루트에서 풀면 정확히
+`~/carla/CarlaUE4/Content/map_package/Maps/Mando/`에 안착한다.
+
+검증:
+```bash
+ls ~/carla/CarlaUE4/Content/map_package/Maps/Mando/
+#   → Mando.umap, OpenDrive/Mando.xodr, TM/Mando.bin 가 보이면 성공
+```
+
+---
+
+### 15.6 Step D — 로드 검증
+
+서버를 띄우고 파이썬 클라이언트로 맵 목록·로드·스폰을 확인한다.
+
+```bash
+# 터미널 A — 서버 (헤드리스)
+cd ~/carla
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
+  ./CarlaUE4.sh -RenderOffScreen -quality-level=Low
+
+# 터미널 B — 검증 클라이언트
+cd ~/carla && source .venv/bin/activate
+python3 - <<'PY'
+import carla
+c = carla.Client('localhost', 2000); c.set_timeout(60.0)
+maps = [m.split('/')[-1] for m in c.get_available_maps()]
+assert 'Mando' in maps, f'Mando 없음: {maps}'
+w = c.load_world('Mando'); import time; time.sleep(2.0)
+m = w.get_map()
+print('로드 OK:', m.name)                      # map_package/Maps/Mando/Mando
+wps = [wp for wp in m.generate_waypoints(1.0) if str(wp.lane_type)=='Driving']
+xs=[w.transform.location.x for w in wps]; ys=[w.transform.location.y for w in wps]
+print('driving lane 범위 x[%.1f~%.1f] y[%.1f~%.1f]'%(min(xs),max(xs),min(ys),max(ys)))
+PY
+```
+
+`Mando`의 주행 차선 범위(참고): **x[-113.7 ~ -93.6], y[-59.4 ~ 0]** (≈20×60 m 소규모 주차장형).
+
+> **버전 경고는 무해**: 클라이언트가 `WARNING: Version mismatch ... Client API = 294096eb1-dirty,
+> Simulator API = 0.9.16`를 띄운다. 이는 Step B의 `PythonAPI.wheel` 빌드가 소스 빌드 wheel을 venv에
+> `--force-reinstall`했기 때문(버전 문자열만 다르고 ABI 동일). 동작에 영향 없음.
+
+> **geoReference 경고도 무해**: `WARNING: cannot parse georeference: ''. Using default values.`
+> RoadRunner xodr에 투영 정보가 없어 GNSS가 기본 원점(0,0) 기준이 된다. dual_filter 스택은
+> **datum-상대**(첫 fix 기준)라 측위·azimuth·EKF·주차 전부 정상. 실좌표가 필요하면 15.9 참고.
+
+---
+
+### 15.7 Step E — Section 12.1 연동 (맵 + 스폰 좌표)
+
+기존 12.1 절차에서 **딱 두 가지**만 바꾼다.
+
+#### E-1. 터미널 2 — 맵 로드 + 스폰 좌표 인자 (맵별 예시)
+
+스폰 좌표는 `--spawn-x/y/z/yaw` 인자로 지정한다(파일 편집 불필요, 맵에 맞게 좌표만 교체).
+
+**카를라맵 (Town01_Opt) 버전:**
+
+```bash
+cd ~/carla && source .venv/bin/activate
+python PythonAPI/util/config.py --map Town01_Opt \
+  && python PythonAPI/examples/manual_control.py --rolename car \
+     --filter vehicle.micro.microlino --generation 2 --sync \
+     --spawn-x 299.4 --spawn-y 133.24 --spawn-z 0.3 --spawn-yaw 0.0
+```
+
+**만도맵 (Mando) 버전:**
+
+```bash
+cd ~/carla && source .venv/bin/activate
+python PythonAPI/util/config.py --map Mando \
+  && python PythonAPI/examples/manual_control.py --rolename car \
+     --filter vehicle.micro.microlino --generation 2 --sync \
+     --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
+```
+
+나머지 터미널 1·3~8은 12.1 그대로(맵 무관). 클릭 주차만 할 거면 **터미널 6(csv_to_utm)은 생략**
+(그 CSV는 Town01용이라 새 맵과 무관 → 15.8 참고).
+
+#### E-2. 스폰 좌표 — 커맨드라인 인자로 지정
+
+`manual_control.py`는 추천 spawn point가 아니라 **고정 좌표**에 ego를 스폰한다. 이 좌표는 **커맨드라인
+인자 `--spawn-x/--spawn-y/--spawn-z/--spawn-yaw`로 지정**한다(파일을 매번 편집할 필요 없음). 인자를
+생략하면 아래 기본값(= Mando 차선)이 쓰인다.
+
+| 인자 | 기본값 | 의미 |
+| :--- | :--- | :--- |
+| `--spawn-x` | `-93.6` | CARLA world X [m] |
+| `--spawn-y` | `0.0` | CARLA world Y [m] |
+| `--spawn-z` | `0.3` | Z [m] (지면 충돌 방지 오프셋) |
+| `--spawn-yaw` | `-90.0` | yaw [deg] (도로 진행 방향) |
+
+> **구현 위치**: `main()`의 argparse에 `--spawn-*` 4개가 정의돼 있고, `World.__init__`이 이를
+> `self._spawn_x/y/z/yaw`로 저장한 뒤 `restart()`의 `spawn_point` 생성에 사용한다.
+> (이전 Town01_Opt 하드코딩 값: x=299.4, y=133.24, yaw=0.0)
+
+**새 맵에서 유효한 스폰 좌표를 구하는 방법** (원하는 대략 위치 `(x,y)`를 차선에 스냅 → 그 값을
+`--spawn-x/y/yaw`로 넘김):
+```bash
+cd ~/carla && source .venv/bin/activate
+python3 - <<'PY'
+import carla
+c=carla.Client('localhost',2000); c.set_timeout(60.0)
+m=c.load_world('Mando').get_map()
+loc=carla.Location(x=-93.0, y=3.0, z=0.0)        # ← 원하는 대략 위치
+wp=m.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
+t=wp.transform
+print('스냅 위치 x=%.2f y=%.2f z=%.2f | 차선 yaw=%.1f | 요청점과 거리=%.2fm'
+      %(t.location.x, t.location.y, t.location.z, t.rotation.yaw,
+        ((t.location.x-loc.x)**2+(t.location.y-loc.y)**2)**0.5))
+PY
+```
+- `project_to_road=True`로 가장 가까운 **Driving 차선**에 스냅된 좌표와 **차선 방향 yaw**를 얻는다.
+- 스폰 `z`는 지면 충돌 방지를 위해 `+0.3` 권장.
+- 패치 후 깨끗한 월드에서 `world.try_spawn_actor(...)`가 `None`이 아니면(충돌 없음) 유효.
+  (주의: 같은 세션에서 반복 스폰/삭제 시 직전 액터 잔재로 충돌해 `None`이 날 수 있음 — 맵을
+  새로 로드하거나 1회만 스폰해 확인할 것.)
+
+> **CARLA 좌표계**: 좌수 좌표 X=전방, **Y=우측**, Z=상. `Mando` 차선은 y가 음수 방향으로 뻗어 있고,
+> 도로 진행 방향 yaw는 -90°(−Y쪽)이다.
+
+---
+
+### 15.8 클릭 주차 모드 동작 구조 (CSV 불필요)
+
+`follow_path_client`는 IDLE / CSV_FOLLOWING / **PARKING** 상태 머신이다.
+
+```text
+RViz "2D Goal Pose"(단축키 G) 드래그
+   → /goal_pose (geometry_msgs/PoseStamped)
+   → follow_path_client._goal_pose_cb → PARKING 전환
+   → planner_server.compute_path_to_pose (SmacPlannerHybrid)  ← 경로를 플래너가 생성
+   → controller_server FollowPath/ParkingPath (MPPI)
+   → /cmd_vel → cmd_vel_to_carla → CARLA VehicleControl
+```
+
+- **CSV(`/csv_path`)는 차선 추종(CSV_FOLLOWING)용**이며 주차와 독립이다. 따라서 **클릭 주차는
+  레퍼런스 CSV가 없어도 동작**한다 → 터미널 6 생략 가능.
+- 주차 목표는 반드시 **맵 도로 영역 안**(Mando: x −113.7~−93.6, y −59.4~0)에서 클릭할 것.
+- `global_costmap`은 `rolling_window: true` 200×200 m라 로봇을 따라다니며 자동으로 새 맵을 커버한다
+  (맵별 costmap 재설정 불필요).
+
+기동 중 건강 체크:
+```bash
+ros2 run tf2_tools view_frames            # utm → odom → base_link
+ros2 lifecycle get /controller_server     # active [3]
+ros2 action info /follow_path             # Action servers: 1
+ros2 topic echo /cmd_vel                  # 클릭 후 속도 명령 발행 확인
+```
+
+---
+
+### 15.9 옵션 — geoReference 주입 (GNSS 실좌표화)
+
+RoadRunner xodr에는 `<geoReference>`가 없어 GNSS가 (0,0) 기준이 된다(dual_filter는 datum-상대라
+무해). **실제 UTM 좌표가 필요**하면 `make import` **이전에** xodr `<header>` 안에 투영 문자열을
+주입한다.
+
+```xml
+<header revMajor="1" revMinor="4" ...>
+  <geoReference><![CDATA[+proj=tmerc +lat_0=<위도> +lon_0=<경도> +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs]]></geoReference>
+  ...
+</header>
+```
+주입 후 Step A부터 다시 수행한다. (좌표값은 맵의 실제 설치 지점 위경도로 설정.)
+
+---
+
+### 15.10 맵 수정 후 재적용 절차 (반복 작업 — 핵심 요약)
+
+RoadRunner에서 맵을 수정·재익스포트한 뒤 적용하려면 아래만 반복한다. **맵 이름(basename)을
+`Mando`로 유지**하면 `make import`가 기존 에셋을 `bReplaceExisting`으로 덮어쓴다(새 맵으로 만들려면
+새 basename 사용).
+
+```bash
+# [0] (최초 1회만) 빌드 도구 설치
+python3 -m pip install build wheel
+
+# [1] 새 익스포트물 복사 (basename 동일하게)
+cp ~/carla/MandoParking1/Mando.fbx ~/carla/MandoParking1/Mando.xodr \
+   ~/carla-0.9.16-source/Import/
+
+# [2] 에디터 콘텐츠로 쿠킹
+cd ~/carla-0.9.16-source && export UE4_ROOT=/home/hannibal/UnrealEngine_4.26
+make import
+
+# [3] 배포 .tar.gz 쿠킹 (Mando만)
+make package ARGS="--packages=map_package"
+
+# [4] 패키지 빌드에 임포트
+cp "$(ls -t Dist/map_package_*.tar.gz | head -1)" ~/carla/Import/
+cd ~/carla && ./ImportAssets.sh && rm -f Import/map_package_*.tar.gz
+
+# [5] 로드 검증 (15.6) 후 12.1 실행. 도로 형상이 바뀌었으면 스폰 좌표 재확인(15.7 E-2)
+```
+
+#### 재적용 시 주의 체크리스트
+- [ ] `Import/`에 이전 `.tar.gz`가 남아있지 않은지 (남으면 ImportAssets가 중복 추출)
+- [ ] 도로 형상이 변경됐다면 **스폰 좌표**를 15.7 E-2로 재확인 후 `--spawn-x/y/z/yaw` 인자로 전달
+- [ ] 차선 추종(CSV)을 쓴다면 **레퍼런스 CSV를 새 맵에서 재녹화**(Section 11). 클릭 주차만이면 불필요
+- [ ] geoReference가 필요하면 `make import` **전에** 주입(15.9)
+
+---
+
+### 15.11 트러블슈팅 요약표
+
+| 증상 | 원인 | 해결 |
+| :--- | :--- | :--- |
+| `No module named build.__main__` → `make: *** [PythonAPI] Error 1` | venv에 PyPI `build` 미설치 | `python3 -m pip install build wheel` |
+| `parse-options: unrecognized option '--packages=...'` | 선행 빌드 스크립트가 옵션 미인식 | **무해**, 무시 (Package.sh만 소비) |
+| `make package`가 1~2시간 걸림 | `--packages` 빠뜨려 전체 Town 맵 쿡 | `ARGS="--packages=map_package"` 사용 |
+| 맵 목록에 `Mando` 없음 | ImportAssets 미실행 / Import에서 추출 실패 | Step C 재수행, `~/carla/CarlaUE4/Content/map_package/Maps/Mando/Mando.umap` 존재 확인 |
+| `There are no spawn points available` | 추천 spawn point 0개인 맵 | `--spawn-x/y/z/yaw` 인자에 차선 스냅값 전달(15.7 E-2) |
+| `try_spawn_actor`가 `None` 반환 | 스폰 지점에 액터 잔재 충돌 / 공중·벽 | 맵 새 로드 후 1회 스폰, z+0.3, 차선 스냅 좌표 사용 |
+| `Version mismatch ... -dirty` 경고 | make package가 소스 wheel을 venv에 재설치 | **무해**, ABI 동일 |
+| `cannot parse georeference: ''` | xodr에 `<geoReference>` 없음 | datum-상대라 **무해**. 실좌표 필요 시 15.9 |
+| 클릭해도 주차 안 함 | controller/planner 미활성 또는 목표가 costmap 밖 | `ros2 lifecycle get /controller_server`=active[3], 도로 영역 안에서 클릭 |
