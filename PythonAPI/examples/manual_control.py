@@ -198,7 +198,7 @@ class World(object):
         self._actor_filter = args.filter
         self._actor_generation = args.generation
         self._gamma = args.gamma
-        # ego 고정 스폰 좌표 (커맨드라인 인자로 지정, 기본값 = Mando 차선)
+        # ego 고정 스폰 좌표 (커맨드라인 인자로 지정, 기본값 = Mando1/Mando2 차선)
         self._spawn_x = args.spawn_x
         self._spawn_y = args.spawn_y
         self._spawn_z = args.spawn_z
@@ -269,7 +269,7 @@ class World(object):
                 sys.exit(1)
             # ego 고정 스폰 위치 (커맨드라인 인자 --spawn-x/y/z/yaw 로 지정)
             # 카를라맵: (299.4, 133.24, z=0.3, yaw=0.0)
-            # Mando맵 (-93.6, 0.0, z=0.3, yaw=-90)
+            # Mando1/Mando2맵 (-93.6, 0.0, z=0.3, yaw=-90)
             spawn_point = carla.Transform(
                 carla.Location(x=self._spawn_x, y=self._spawn_y, z=self._spawn_z),
                 carla.Rotation(yaw=self._spawn_yaw)
@@ -1357,12 +1357,12 @@ def main():
         '--spawn-x',
         default=-93.6,
         type=float,
-        help='ego 고정 스폰 X 좌표 [m] (CARLA world, default: -93.6 = Mando 차선)')
+        help='ego 고정 스폰 X 좌표 [m] (CARLA world, default: -93.6 = Mando1/Mando2 차선)')
     argparser.add_argument(
         '--spawn-y',
         default=0.0,
         type=float,
-        help='ego 고정 스폰 Y 좌표 [m] (CARLA world, default: 0.0 = Mando 차선)')
+        help='ego 고정 스폰 Y 좌표 [m] (CARLA world, default: 0.0 = Mando1/Mando2 차선)')
     argparser.add_argument(
         '--spawn-z',
         default=0.3,
@@ -1372,7 +1372,7 @@ def main():
         '--spawn-yaw',
         default=-90.0,
         type=float,
-        help='ego 고정 스폰 yaw [deg] (CARLA world, default: -90.0 = Mando 도로방향)')
+        help='ego 고정 스폰 yaw [deg] (CARLA world, default: -90.0 = Mando1/Mando2 도로방향)')
     args = argparser.parse_args()
 
     args.width, args.height = [int(x) for x in args.res.split('x')]
