@@ -1981,7 +1981,7 @@ python PythonAPI/util/config.py --map Town01_Opt \
 ```bash
 cd ~/carla
 source .venv/bin/activate
-python PythonAPI/util/config.py --map Mando3 \
+python PythonAPI/util/config.py --map Mando2 \
   && python PythonAPI/examples/manual_control.py --rolename car \
      --filter vehicle.micro.microlino --generation 2 --sync \
      --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
@@ -3116,6 +3116,94 @@ ObstacleLayer는 매 LiDAR 스캔마다 두 작업을 동시에 수행한다.
 
 ---
 
+#### `rolling_window` — 격자 원점을 차량에 고정할지 월드에 고정할지
+
+`rolling_window`는 costmap 격자의 **원점을 차량을 따라 이동시킬지(`true`), 월드의 한 점에 고정할지(`false`)** 를 결정하는 플래그다. costmap 장애물의 "기억 지속성"을 좌우하는 1차 변수다.
+
+경로: `local_costmap.local_costmap.ros__parameters.rolling_window` (global_costmap 동일 위치)
+
+**`rolling_window: true` (현재 local_costmap, global_costmap 모두):**
+
+격자가 차량을 중심으로 따라다니는 "창문"처럼 동작한다.
+
+```text
+                    width(20m)
+        ┌───────────────────────┐
+        │                       │
+ height │          🚗           │   ← 차량은 항상 창 중앙 근처
+ (20m)  │       (항상 중앙)      │
+        │                       │
+        └───────────────────────┘
+   창 전체가 차량과 함께 미끄러져 이동(rolling)
+```
+
+* 격자는 항상 차량 주변 `width × height` 만 표현한다. 차량이 1 m 이동하면 창도 1 m 따라간다.
+* **창 경계 밖으로 나간 영역의 셀 값은 폐기된다.** 차량이 어떤 지점을 지나 `width/2` 이상 멀어지면, 그 지점에 마킹했던 장애물 셀은 창 밖으로 나가며 메모리에서 사라진다.
+* 다시 그 지점으로 돌아오면 창에 새로 들어온 셀은 초기값(unknown/free)으로 리셋되어 있다 — **과거 기억이 없다.**
+* 장점: 격자 크기가 고정(20×20 m / 0.1 m → 40,000 셀)이라 CPU·메모리가 일정하고 무한 누적이 없다. local costmap의 표준 설정.
+
+**`rolling_window: false`:**
+
+격자 원점이 월드(`global_frame`)의 고정점에 앵커된다.
+
+* 차량이 이동해도 격자는 움직이지 않는다. 한 번 마킹한 장애물은 차량이 멀어져도 그 셀에 그대로 남는다 → **지속성 확보.**
+* 격자가 주행 영역 전체를 덮어야 하므로 셀 수 = 면적 / 해상도² 로 커진다. 크기·원점을 명시하지 않으면 Nav2 기본값(5 m × 5 m 고정 격자, 원점 UTM (0,0) 앵커)에 걸려 로봇이 맵 밖으로 나가는 오류가 발생한다(Section 12.5 의 "⑨ `global_costmap` 범위 오류" 항목 참고).
+
+| 항목 | `rolling_window: true` | `rolling_window: false` |
+| :--- | :--- | :--- |
+| 격자 원점 | 차량 따라 이동 | 월드 고정점 앵커 |
+| 창 밖 셀 | 자동 폐기(소멸) | 해당 없음(전체 유지) |
+| 셀 수 | 작고 일정 | 주행 영역 전체 = 큼 |
+| 장애물 기억 지속성 | **없음** (떠나면 잊음) | **있음** |
+| 용도 | 표준 local 제어 | 맵 단위 기억 / 정적 지도 |
+
+---
+
+#### 장애물 셀이 정확히 언제 지워지는가 (clearing 조건)
+
+마킹된 장애물 셀을 지우는 메커니즘은 **두 가지뿐**이다. 둘 중 하나라도 발동하면 셀이 사라진다.
+
+| 지우개 | 발동 조건 | 창 내부 셀도 지우는가 |
+| :--- | :--- | :--- |
+| **① rolling_window 이동** | 셀이 창 **경계 밖**으로 벗어남 | ❌ (창 안이면 해당 없음) |
+| **② clearing (레이캐스팅)** | 센서→측정점 광선이 그 셀을 **통과** | ✅ **창 내부라도 지운다** |
+
+따라서 "**rolling_window 창 안에 있으면 한 번 감지된 장애물이 영구히 기억되는가?**"의 답은 **조건부 '아니오'** 다. 창 안에 머무는 동안에도 ② clearing 광선이 그 셀을 통과하면 즉시 `FREE_SPACE`로 지워진다. 마킹이 유지되는 것은 **clearing 광선이 닿지 않는 동안에만** 성립한다.
+
+```text
+센서(LiDAR) ●━━━━━━━━━━━━▶ ◇측정점
+              이 광선이 지나간 셀들 = FREE_SPACE 로 클리어
+```
+
+마킹된 셀의 운명은 그 셀로 광선이 지나가느냐에 달렸다.
+
+| 셀 상황 | clearing 광선 | 결과 |
+| :--- | :--- | :--- |
+| 장애물이 그대로 있고 가림(occlusion)/사각으로 광선이 못 닿음 | 닿지 않음 | **마킹 유지(잔류)** ✅ |
+| 장애물이 FOV 밖 또는 `raytrace_max_range`(18 m) 초과 | 닿지 않음 | **마킹 유지(잔류)** ✅ |
+| 장애물이 치워졌고 그 자리로 광선이 통과 | 통과 | **FREE 로 클리어** ❌ |
+| 장애물은 있으나 각도 변화로 광선이 셀을 비껴 통과 | 통과 | **FREE 로 클리어** ❌ (오클리어) |
+
+**2D LiDAR의 한계:** `lidar_2d`는 단일 평면만 스캔하므로, 차량 자세·각도가 바뀌면 실제로 존재하는 장애물을 비껴가는 광선이 생기기 쉽다. 이 경우 ②에 의해 실재 장애물이 클리어될 수 있어, 창 내부라도 지속성이 불안정하다.
+
+---
+
+#### 지속성이 필요한 경우 (예: 주차 진입↔탈출)
+
+장애물을 **진입 시 감지했지만 탈출 시에는 못 보는** 상황(2D LiDAR 사각/가림/평면 이탈)에서도 안전 주행을 위해 costmap에 장애물을 유지해야 할 때가 있다. 현재 기본 구성(`rolling_window: true` + `clearing: true`)은 위 ①·② 두 메커니즘 때문에 이 지속성을 보장하지 못한다.
+
+지속성을 확보하는 선택지:
+
+| 방법 | 효과 | 주의 |
+| :--- | :--- | :--- |
+| `clearing: false` 로 변경 | 창 내부에서 절대 클리어 안 됨 | ① 창 밖 소멸은 여전; 동적 장애물·센서 노이즈가 영구 잔류하는 **유령(ghost) 장애물** 위험 |
+| 주차 구역을 덮는 **non-rolling 보조 costmap** | ① 소멸까지 차단, 구역 내 영구 기억 | 구역 면적만큼 셀 수 증가 |
+| 알려진 정적 장애물을 **StaticLayer** 로 분리 | 감지 여부와 무관하게 항상 존재; clearing 대상 아님 | 사전에 장애물 위치(맵 좌표)를 알아야 함 |
+
+정적 장애물(주차 콘 등)은 clearing이 오히려 방해가 되므로, **실시간 LiDAR 레이어(`clearing: true`)와 정적 장애물 레이어(StaticLayer, 클리어 안 함)를 분리**하는 것이 가장 안전하다. 동적 장애물 대응은 유지하면서 정적 장애물 기억을 영구 보장할 수 있다.
+
+---
+
 ### 13.5 현재 설정의 종합적 의도
 
 현재 파라미터 설정은 다음 세 가지 목표의 균형을 노린다:
@@ -3914,7 +4002,108 @@ RoadRunner xodr에는 `<geoReference>`가 없어 GNSS가 (0,0) 기준이 된다(
 
 ---
 
-### 15.10 맵 수정 후 재적용 절차 (반복 작업 — 핵심 요약)
+### 15.10 CARLA 좌표 ↔ UTM 변환 및 맵 시각화/검증 도구
+
+> **이 절의 목적**: 맵의 차선·장애물 좌표를 **정적 costmap(StaticLayer)** 으로 굽거나 절대 위치를
+> 다룰 때, CARLA 월드 좌표를 ROS 스택이 쓰는 **UTM/`utm` 프레임**으로 변환하는 방법과 그 정확성을
+> 검증하는 도구를 기록한다. 15.9(geoReference 주입)는 _실좌표를 맵에 박아 넣는_ 방법이고, 이 절은
+> _geoReference를 건드리지 않고 CARLA 자신의 georeference로 오프라인 변환을 얻는_ 방법이다.
+
+#### 배경 — 왜 변환이 필요한가
+
+`CustomMap/visualize_map.py`(아래)가 보여주는 좌표는 **CARLA 월드 (x, y) 미터**다. 반면 Nav2/dual_filter
+스택은 [Section 2.3](#23-utm--전역-절대-기준점)의 **`utm` 프레임**(datum-상대)에서 동작한다. 따라서
+맵 좌표를 costmap에 쓰려면 `CARLA world → UTM → utm 프레임` 변환이 필요하다.
+
+핵심은 **CARLA 내장 GNSS 센서가 lat/lon을 만드는 것과 똑같은 georeference를 오프라인에서도 그대로
+재현할 수 있다**는 점이다. `carla.Map.transform_to_geolocation()`이 그 georeference를 직접 노출한다.
+
+#### 변환 사슬
+
+```text
+CARLA world (x, y)
+   │  ① carla.Map.transform_to_geolocation(Location(x,y,z))   ← CARLA georeference (라이브 GNSS와 동일)
+   ▼
+위경도 (lat, lon)
+   │  ② to_utm(lat, lon)   (visualize_map.py, gnss_to_utm/utm_converter.hpp 와 동일한 표준 WGS84 UTM)
+   ▼
+절대 UTM (E, N)            ← /f9r_utm 과 동일한 값
+   │  ③ (E − datum_E), −(N − datum_N)   ← gnss_to_odom.py datum 적용 + CARLA +Y=right 미러링
+   ▼
+ROS utm 프레임 (x_ros, y_ros)
+```
+
+- **① georeference**: 이 맵들은 xodr에 `<geoReference>`가 없어(`cannot parse georeference: ''`) CARLA
+  기본 georeference를 쓴다. 실측 결과 기본 기준점은 **lat≈42.0, lon≈2.0 (바르셀로나/UAB)** 이다.
+- **② UTM 공식**: `visualize_map.py`의 `to_utm()`은 `gnss_to_utm/utm_converter.hpp`의 `toUTM()`과
+  **동일한 수식**(k0=0.9996, false easting 500000, zone=lon 기반)이라 라이브 `f9r_to_utm`과 비트 단위로 일치한다.
+- **③ datum**: [Section 2.3](#23-utm--전역-절대-기준점)대로 datum은 실행마다 달라진다. 정적 지도를 미리
+  구워 재사용하려면 datum을 **고정 UTM 값으로 하드코딩**해야 ③ 변환이 실행 불변이 된다.
+
+#### 왜 라이브 파이프라인과 동일한가 (검증 완료)
+
+라이브 GNSS 센서는 **서버가 로드한 맵**의 georeference로 lat/lon을 만들고, 오프라인 변환은
+**xodr로 생성한 `carla.Map`**의 georeference를 쓴다. 둘이 같으면 오프라인 UTM = 라이브 UTM이다.
+
+| 단계 | 라이브 (실행 중) | 오프라인 (visualize_map) | 일치 |
+| :--- | :--- | :--- | :---: |
+| world → lat/lon | 서버 맵 georeference | `carla.Map.transform_to_geolocation` | ✅ |
+| lat/lon → UTM | `f9r_to_utm` (`utm_converter.hpp`) | `to_utm()` 동일 수식 | ✅ |
+
+`verify_utm_georef.py`로 두 georeference를 비교한 결과 **최대 UTM 오차 0.0000 m** 로 일치 확인.
+즉 오프라인 변환을 그대로 신뢰해 costmap 좌표로 사용할 수 있다.
+
+#### 도구 1 — `CustomMap/visualize_map.py` (맵 항공뷰 + 좌표 표시)
+
+xodr을 오프라인 파싱해 모든 레인(주행/주차칸/인도/갓길)의 중심선·좌우 경계와 `<objects>`(트래픽콘 등
+장애물)를 CARLA 월드 좌표로 그린다. 마우스를 올리면 해당 픽셀의 **CARLA (x,y)와 UTM (E,N)** 을 함께 표시한다.
+
+```bash
+cd ~/carla/CustomMap
+python visualize_map.py MandoParking2                      # 맵 이름으로
+python visualize_map.py CustomMap/MandoParking2/Mando2.xodr # .xodr 경로 직접
+python visualize_map.py MandoParking2 --step 0.3 --size 1200 # 촘촘하게 + 큰 창
+```
+
+| 인자 | 기본값 | 의미 |
+| :--- | :---: | :--- |
+| `map` | (필수) | 맵 이름(`MandoParking2`) 또는 `.xodr` 경로 |
+| `--step` | 0.5 | 레인 샘플링 간격(m). 작을수록 곡선이 매끄럽고 느림 |
+| `--size` | 1000 | 창 최대 크기(px) |
+
+- 시작 로그에 **CARLA 범위와 UTM 범위**를 함께 출력한다.
+- 화면 좌상단 라벨: `CARLA x=… y=…` / `UTM E=… N=…` 두 줄. `q`/`ESC`로 종료.
+- 장애물은 빨간 원 + `width×length` 외형 박스(`hdg` 회전)로 표시된다.
+- 의존성: `carla`, `numpy`, `opencv-python`. OpenCV 창이 뜨므로 디스플레이가 필요하다(서버는 불필요 — xodr만으로 동작).
+
+#### 도구 2 — `CustomMap/verify_utm_georef.py` (georeference 일치 검증)
+
+오프라인 xodr georeference가 라이브 서버 맵 georeference와 같은지 확인한다. **CARLA 서버가 떠 있고
+해당 맵이 로드된 상태**에서 실행한다(ROS 불필요 — 두 `carla.Map`의 `transform_to_geolocation`만 비교).
+
+```bash
+cd ~/carla/CustomMap
+python verify_utm_georef.py MandoParking2
+python verify_utm_georef.py MandoParking2 --host 127.0.0.1 --port 2000 --tol 0.05
+```
+
+| 인자 | 기본값 | 의미 |
+| :--- | :---: | :--- |
+| `map` | (필수) | 맵 이름 또는 `.xodr` 경로 |
+| `--host` / `--port` | 127.0.0.1 / 2000 | CARLA 서버 주소 |
+| `--tol` | 0.05 | UTM 허용 오차(m). 이내면 PASS |
+
+- 맵 경계(xodr `<header>`의 north/south/east/west) 안에 5×5 격자 점을 만들어 두 맵의 lat/lon·UTM을 비교한다.
+- `최대 UTM E/N 차이`가 `--tol` 이내면 `[✓] PASS`, 종료코드 0. 초과면 `[✗] FAIL`, 종료코드 1.
+- 서버 미실행 시 연결 실패 메시지 후 종료코드 2.
+
+> **권장 순서**: ① 서버에 맵 로드 → ② `verify_utm_georef.py`로 PASS 확인 → ③ `visualize_map.py`의
+> UTM 값을 신뢰해 정적 costmap 좌표로 사용. geoReference를 주입(15.9)하면 기준점이 실좌표로 바뀌므로,
+> 주입 여부를 바꿨다면 검증을 다시 수행한다.
+
+---
+
+### 15.11 맵 수정 후 재적용 절차 (반복 작업 — 핵심 요약)
 
 RoadRunner에서 맵을 수정·재익스포트한 뒤 적용하려면 아래만 반복한다. **맵 이름(basename)을
 `Mando1`/`Mando2`/`Mando3`로 유지**하면 `make import`가 기존 에셋을 `bReplaceExisting`으로 덮어쓴다(또 다른
@@ -3952,7 +4141,7 @@ cd ~/carla && ./ImportAssets.sh && rm -f Import/map_package_*.tar.gz
 
 ---
 
-### 15.11 트러블슈팅 요약표
+### 15.12 트러블슈팅 요약표
 
 | 증상 | 원인 | 해결 |
 | :--- | :--- | :--- |

@@ -9,10 +9,11 @@ XODR(OpenDRIVE)을 CARLA로 오프라인 파싱하여 모든 레인(주행/주�
 사용:
     python visualize_map.py MandoParking2
     python visualize_map.py CustomMap/MandoParking2/Mando2.xodr
-    python visualize_map.py MandoParking2 --step 0.3 --size 1200
+    python visualize_map.py MandoParking2 --step 0.3 --size 1400
 """
 import argparse
 import glob
+import math
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -53,6 +54,51 @@ def resolve_xodr(arg):
     raise FileNotFoundError(f"'{arg}' 에 해당하는 .xodr 를 찾지 못했습니다.")
 
 
+# WGS84 파라미터 — gnss_to_utm/utm_converter.hpp 와 동일한 표준 UTM 공식.
+# 라이브 파이프라인(f9r_to_utm)과 같은 절대 UTM(E,N)을 만들기 위해 수식을 일치시킨다.
+_WGS84_A = 6378137.0
+_WGS84_E = 0.081819190842622
+
+
+def to_utm(lat, lon):
+    """위경도(deg) → 절대 UTM (easting, northing, zone). utm_converter.hpp 와 동일."""
+    e2 = _WGS84_E * _WGS84_E
+    e4 = e2 * e2
+    e6 = e4 * e2
+    lat_r = math.radians(lat)
+    lon_r = math.radians(lon)
+    zone = int((lon + 180.0) / 6) + 1
+    zlon = math.radians(zone * 6 - 183)
+    N = _WGS84_A / math.sqrt(1 - e2 * math.sin(lat_r) ** 2)
+    T = math.tan(lat_r) ** 2
+    C = e2 / (1 - e2) * math.cos(lat_r) ** 2
+    A = (lon_r - zlon) * math.cos(lat_r)
+    M = _WGS84_A * ((1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256) * lat_r
+                    - (3 * e2 / 8 + 3 * e4 / 32 + 45 * e6 / 1024) * math.sin(2 * lat_r)
+                    + (15 * e4 / 256 + 45 * e6 / 1024) * math.sin(4 * lat_r)
+                    - (35 * e6 / 3072) * math.sin(6 * lat_r))
+    easting = 0.9996 * N * (A + (1 - T + C) * A ** 3 / 6
+                            + (5 - 18 * T + T * T + 72 * C - 58 * e2) * A ** 5 / 120) + 500000.0
+    northing = 0.9996 * (M + N * math.tan(lat_r) * (A * A / 2
+                         + (5 - T + 9 * C + 4 * C * C) * A ** 4 / 24
+                         + (61 - 58 * T + T * T + 600 * C - 330 * e2) * A ** 6 / 720))
+    if lat < 0:
+        northing += 10000000.0
+    return easting, northing, zone
+
+
+def make_world_to_utm(cmap):
+    """
+    carla.Map 으로부터 CARLA 월드 (x, y) → 절대 UTM (E, N) 변환 함수를 생성.
+    CARLA 자신의 georeference 로 lat/lon 을 구하므로 라이브 GNSS 와 동일한 결과.
+    """
+    def world_to_utm(wx, wy):
+        geo = cmap.transform_to_geolocation(carla.Location(x=wx, y=wy, z=0.0))
+        e, n, _ = to_utm(geo.latitude, geo.longitude)
+        return e, n
+    return world_to_utm
+
+
 def lane_section_ranges(road):
     """road 의 각 laneSection 의 (s_start, s_end) 리스트."""
     length = float(road.get("length"))
@@ -69,6 +115,7 @@ def extract_polylines(xodr_path, step):
     """
     XODR 의 모든 레인을 따라가며 (lane_type, center[], left[], right[]) 폴리라인 추출.
     좌표는 CARLA 월드 (x, y) 미터.
+    반환: (lanes, cmap) — cmap 은 UTM 변환(make_world_to_utm)에 재사용.
     """
     xodr = open(xodr_path).read()
     cmap = carla.Map(os.path.splitext(os.path.basename(xodr_path))[0], xodr)
@@ -100,7 +147,7 @@ def extract_polylines(xodr_path, step):
                         s += step
                     if len(center) >= 2:
                         lanes.append((ltype, center, left, right))
-    return lanes
+    return lanes, cmap
 
 
 def extract_objects(xodr_path):
@@ -144,9 +191,10 @@ def extract_objects(xodr_path):
 
 
 class AerialView:
-    def __init__(self, lanes, objects=None, size=1000, margin=40):
+    def __init__(self, lanes, objects=None, world_to_utm=None, size=1000, margin=40):
         self.lanes = lanes
         self.objects = objects or []
+        self.world_to_utm = world_to_utm
         self.margin = margin
         pts = np.array(
             [p for _, c, l, r in lanes for grp in (c, l, r) for p in grp],
@@ -255,11 +303,17 @@ class AerialView:
             u, v = self.mouse_px
             cv2.line(img, (u, 0), (u, self.H), (0, 0, 255), 1)
             cv2.line(img, (0, v), (self.W, v), (0, 0, 255), 1)
-            label = f"x={wx:7.2f}  y={wy:7.2f}  (m, CARLA)"
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            cv2.rectangle(img, (8, 8), (8 + tw + 12, 8 + th + 14), (0, 0, 0), -1)
-            cv2.putText(img, label, (14, 8 + th + 4), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 255, 255), 2, cv2.LINE_AA)
+            lines = [f"CARLA  x={wx:8.2f}  y={wy:8.2f}  (m)"]
+            if self.world_to_utm is not None:
+                e, n = self.world_to_utm(wx, wy)
+                lines.append(f"UTM    E={e:10.2f}  N={n:11.2f}  (m)")
+            (tw, th), _ = cv2.getTextSize(max(lines, key=len),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            dy = th + 10
+            cv2.rectangle(img, (8, 8), (8 + tw + 12, 8 + dy * len(lines) + 6), (0, 0, 0), -1)
+            for i, line in enumerate(lines):
+                cv2.putText(img, line, (14, 8 + th + 4 + dy * i),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
         return img
 
 
@@ -272,16 +326,23 @@ def main():
 
     xodr_path = resolve_xodr(args.map)
     print(f"[i] XODR: {xodr_path}")
-    lanes = extract_polylines(xodr_path, args.step)
+    lanes, cmap = extract_polylines(xodr_path, args.step)
     objects = extract_objects(xodr_path)
     print(f"[i] {len(lanes)} 개 레인, {len(objects)} 개 장애물(object) 추출 완료")
     if not lanes:
         print("[!] 그릴 레인이 없습니다.")
         sys.exit(1)
 
-    view = AerialView(lanes, objects, size=args.size)
-    print(f"[i] 범위  x: {view.xmin:.1f}..{view.xmax:.1f}  "
+    # CARLA georeference 로 (x,y) → 절대 UTM(E,N). 라이브 GNSS 파이프라인과 동일.
+    world_to_utm = make_world_to_utm(cmap)
+
+    view = AerialView(lanes, objects, world_to_utm, size=args.size)
+    e0, n0 = world_to_utm(view.xmin, view.ymin)
+    e1, n1 = world_to_utm(view.xmax, view.ymax)
+    print(f"[i] 범위  CARLA x: {view.xmin:.1f}..{view.xmax:.1f}  "
           f"y: {view.ymin:.1f}..{view.ymax:.1f} (m)")
+    print(f"[i] 범위  UTM   E: {min(e0,e1):.1f}..{max(e0,e1):.1f}  "
+          f"N: {min(n0,n1):.1f}..{max(n0,n1):.1f} (m)")
     win = "AerialView - " + os.path.basename(xodr_path)
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, view.on_mouse)
