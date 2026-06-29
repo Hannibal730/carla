@@ -15,6 +15,8 @@ import argparse
 import glob
 import math
 import os
+import shutil
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -85,6 +87,26 @@ def to_utm(lat, lon):
     if lat < 0:
         northing += 10000000.0
     return easting, northing, zone
+
+
+def copy_to_clipboard(text):
+    """텍스트를 시스템 클립보드로 복사. pyperclip → xclip/xsel/wl-copy 순으로 시도."""
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        return True
+    except Exception:
+        pass
+    for cmd in (["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+                ["wl-copy"]):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text.encode(), check=True)
+                return True
+            except Exception:
+                continue
+    return False
 
 
 def make_world_to_utm(cmap):
@@ -210,6 +232,7 @@ class AerialView:
         self.H = int(span_y * self.scale) + 2 * margin
         self.base = self._render()
         self.mouse_world = None
+        self.copied_msg = None
 
     def world_to_px(self, wx, wy):
         u = int((wx - self.xmin) * self.scale) + self.margin
@@ -295,6 +318,23 @@ class AerialView:
     def on_mouse(self, event, x, y, flags, param):
         self.mouse_world = self.px_to_world(x, y)
         self.mouse_px = (x, y)
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self._copy_at(x, y)
+
+    def _copy_at(self, x, y):
+        wx, wy = self.px_to_world(x, y)
+        parts = [f"CARLA: ({wx:.2f}, {wy:.2f})"]
+        if self.world_to_utm is not None:
+            e, n = self.world_to_utm(wx, wy)
+            parts.append(f"UTM: [{e:.2f}, {n:.2f}]")
+        text = "  ".join(parts)
+        ok = copy_to_clipboard(text)
+        if ok:
+            print(f"[복사됨] {text}")
+            self.copied_msg = f"Copied!  {text}"
+        else:
+            print(f"[복사 실패 — xclip/xsel/wl-clipboard 또는 pyperclip 설치 필요] {text}")
+            self.copied_msg = "Copy failed (install xclip/xsel/wl-clipboard or pyperclip)"
 
     def frame(self):
         img = self.base.copy()
@@ -314,6 +354,12 @@ class AerialView:
             for i, line in enumerate(lines):
                 cv2.putText(img, line, (14, 8 + th + 4 + dy * i),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+        if self.copied_msg:
+            (tw, th), _ = cv2.getTextSize(self.copied_msg, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            y0 = self.H - 14
+            cv2.rectangle(img, (8, y0 - th - 8), (8 + tw + 12, y0 + 6), (0, 0, 0), -1)
+            cv2.putText(img, self.copied_msg, (14, y0), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (120, 255, 120), 1, cv2.LINE_AA)
         return img
 
 
@@ -346,7 +392,7 @@ def main():
     win = "AerialView - " + os.path.basename(xodr_path)
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, view.on_mouse)
-    print("[i] 마우스를 올리면 좌표 표시. q/ESC 로 종료.")
+    print("[i] 마우스를 올리면 좌표 표시. 클릭하면 CARLA·UTM 좌표를 클립보드에 복사. q/ESC 로 종료.")
     while True:
         cv2.imshow(win, view.frame())
         k = cv2.waitKey(20) & 0xFF
