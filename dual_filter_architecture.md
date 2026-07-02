@@ -38,6 +38,7 @@
 | :--- | :--- | :--- |
 | CARLA simulation clock | `/clock` | `rosgraph_msgs/msg/Clock` |
 | RGB 카메라 | `/carla/car/rgb/image` | `sensor_msgs/msg/Image` |
+| 후방 카메라 (주차용) | `/carla/car/rear_cam/image` | `sensor_msgs/msg/Image` |
 | LiDAR (3D) | `/carla/car/lidar_3d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
 | LiDAR (2D) | `/carla/car/lidar_2d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
 | GNSS (후륜축) | `/carla/car/f9r/fix` | `sensor_msgs/msg/NavSatFix` |
@@ -735,6 +736,36 @@ CARLA synchronous/passive 환경에서는 simulation time과 wall time이 다를
 | `linear_acceleration` | CARLA acceleration을 ROS Y-left로 변환 | 현재 EKF에서는 사용 안 함 |
 
 CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=up`이다. 따라서 yaw-rate와 Y축 성분은 부호를 반전한다.
+
+#### 센서 QoS (BEST_EFFORT vs RELIABLE)
+
+`ros2_sensor.py`는 토픽마다 DDS **Reliability** QoS를 다르게 발행한다. Reliability는 "퍼블리셔가 메시지 전달을 보장하느냐"를 정하는 정책이다.
+
+| 정책 | 전달 보장 | 손실 메시지 | 지연/부하 | 비유 |
+| :--- | :--- | :--- | :--- | :--- |
+| **BEST_EFFORT** | ❌ 없음 (보내고 잊음) | 그냥 버림 | 낮음 | UDP |
+| **RELIABLE** | ✅ 보장 (ACK·재전송) | 받을 때까지 재전송 | 높음 (ACK 왕복·버퍼·백프레셔) | TCP |
+
+핵심 원리는 **"늦게 도착한 데이터는 이미 쓸모없다"** 이다. 고주기 스트림(카메라·라이다)은 다음 프레임이 곧 오므로, 누락분을 재전송받아봤자 stale이고 그 대기가 지연·백프레셔만 만든다. 따라서 이런 스트림은 최신 프레임을 흘려보내는 BEST_EFFORT가 적합하며, 이것이 ROS 2 표준 `SensorDataQoS`(BEST_EFFORT, KEEP_LAST, depth 5)이다. 반대로 경로·맵·명령처럼 빠짐없는 전달이 중요한 저대역폭 데이터는 RELIABLE을 쓴다.
+
+**호환성 규칙 (비대칭):**
+
+* **BEST_EFFORT 구독자**는 BEST_EFFORT·RELIABLE 퍼블리셔 **둘 다** 수신 가능(호환).
+* **RELIABLE 구독자**는 BEST_EFFORT 퍼블리셔를 **수신 불가**(불일치, `No messages will be sent` 경고). → 구독 QoS는 퍼블리셔에 맞춰야 한다.
+
+**본 프로젝트의 퍼블리셔 QoS (`ros2_sensor.py` `_start_publishers`):**
+
+| 토픽 | QoS | 이유 |
+| :--- | :--- | :--- |
+| `rgb/image`, `rear_cam/image` | **BEST_EFFORT** (`_sensor_qos`) | 이미지 ≈ 921 KB/frame·20 FPS ≈ 18 MB/s. RELIABLE 시 백프레셔로 전체 렉 → 국룰대로 BEST_EFFORT |
+| `lidar_2d`, `lidar_3d/point_cloud` | **RELIABLE** (`_lidar_qos`) | 소비자(Nav2 costmap `obstacle_layer`)가 RELIABLE 구독. 국룰(BEST_EFFORT)과 다르지만, 2D 라이다는 1000 pts/s로 데이터가 작아 RELIABLE 비용 ≈ 0이고 장애물 관측은 드롭 없이 받는 편이 안전 |
+| `f9r/fix`, `f9p/fix` | **RELIABLE** (`_gnss_qos`) | `f9r_to_utm`/`f9p_to_utm` C++ 노드가 RELIABLE 구독 |
+| `imu/data`, `wheel_encoder/data` | **RELIABLE** (`_ekf_qos`) | `robot_localization` EKF가 RELIABLE 구독 |
+| `/clock` | **BEST_EFFORT** (`_clock_qos`) | 최신 시각만 유효, depth 1 |
+
+> **RViz 설정:** `ros2_sensor.rviz`의 이미지·라이다 디스플레이는 모두 `Reliability Policy: Best Effort`로 설정돼 있다. BEST_EFFORT 구독은 위 규칙상 두 종류 퍼블리셔를 모두 받으므로, 카메라(BEST_EFFORT pub)와 라이다(RELIABLE pub)를 한 설정으로 안전하게 시각화한다. 반대로 카메라 디스플레이를 RELIABLE로 두면 QoS 불일치로 영상이 뜨지 않는다.
+>
+> **국룰 요약:** 고대역폭·고주기 센서 = BEST_EFFORT(`SensorDataQoS`) / 제어·경로·맵 = RELIABLE / 래치성 데이터(map, static_layer, `/utm_datum`) = RELIABLE + `transient_local`. 라이다를 RELIABLE로 둔 것은 소비자(costmap)와 통일하기 위한 의도된 예외다.
 
 ### 6.4 `dual_filter.launch.py` 토픽 리매핑 요약
 
@@ -1997,8 +2028,21 @@ python ros2_sensor/ros2_sensor.py \
   -f ros2_sensor/stack.json \
   --attach-existing --passive --python-ros2 \
   --base-frame base_link --wait-for-vehicle 30 \
-  --sensors f9r f9p imu lidar_2d
+  --sensors f9r f9p imu lidar_2d rear_cam
 ```
+
+> **후방 카메라(`rear_cam`)**: 주차 시 차량 뒷모습 확인용 모니터링 카메라.
+> `stack.json`에 `spawn_point: {x:-1.3, y:0, z:1.0, pitch:12, yaw:180}` 으로 정의(후면 범퍼 높이,
+> `yaw:180`으로 후방을 바라봄, `pitch:12`로 지면 쪽을 살짝 내려다봄 → 주차선 식별). 부착 위치·각도는
+> `ros2_sensor/stack.json`의 `spawn_point`에서 조절한다(`x` +앞/−뒤, `y` +좌/−우, `z` 높이, `yaw` CCW+).
+> 발행 토픽은 `/carla/car/rear_cam/image`(`sensor_msgs/Image`)이며 EKF·Nav2 파이프라인에는 관여하지 않는다.
+> 확인: `ros2 run rqt_image_view rqt_image_view /carla/car/rear_cam/image`
+>
+> **QoS 주의**: 카메라 이미지는 고대역폭 스트림이라 `BEST_EFFORT`로 발행한다(`RELIABLE`로 하면
+> ACK·재전송 백프레셔로 전체 렉 유발). 따라서 **RViz2 Image 디스플레이의 `Reliability Policy`를
+> `Best Effort`로** 맞춰야 한다(기본 `Reliable`이면 QoS 불일치로 `No messages will be sent` 경고와
+> 함께 안 보임). 제공된 `ros2_sensor.rviz`에는 이미 반영돼 있고, `rqt_image_view`는 자동으로 맞춰진다.
+> 자세한 QoS 규칙은 [Section 6.3](#63-ros2_sensorpy-센서-브리지-노드)의 "센서 QoS" 항목을 참고한다.
 
 #### 터미널 4 — Dual Filter (EKF + GNSS)
 
