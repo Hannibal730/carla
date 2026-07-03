@@ -32,7 +32,36 @@
 *   **Sensor Inputs:** CARLA Vehicle API (→ `/carla/car/wheel_encoder/data`), 6-DOF IMU, Dual RTK GNSS (f9r / f9p)
 *   **Controller:** MPPI
 
-### 1.1 활용 가능한 CARLA 센서 토픽
+### 1.1 왜 로컬/글로벌 두 필터로 나누는가 (설계 목적)
+
+단일 필터에 GNSS를 넣으면 **"제어 안정성"과 "절대 정확도"를 동시에 만족할 수 없다.** GNSS는 정확하지만 신호 반사·보정으로 위치가 순간적으로 튄다(Jump). 이 튐이 필터 출력에 직접 반영되면 다음 문제가 생긴다.
+
+```
+GNSS가 순간 1m 튐
+  → 필터가 계산한 차량 위치도 1m 순간이동
+  → MPPI가 잘못된 초기 상태에서 rollout 계산 → 조향/가감속 발산
+```
+
+반대로 GNSS를 빼면 부드럽지만 시간이 지날수록 실제 위치와 어긋난다(드리프트). **하나의 필터로는 "안 튀는 부드러움"과 "GNSS 절대 정확도"를 둘 다 줄 수 없다.** 그래서 역할을 둘로 분리한다.
+
+| 필터 | 담당 | GNSS | 발행 TF | 소비자 |
+| :--- | :--- | :--- | :--- | :--- |
+| **로컬 EKF** | **부드러움** — 안 튀는 연속적 오도메트리 | ❌ 안 씀 | `odom → base_link` | MPPI 로컬 제어 |
+| **글로벌 EKF** | **절대 정확도** — 지구상 실제 위치 | ✅ 씀 | `utm → odom` | 전역 경로 추종 |
+
+**핵심 트릭 — GNSS의 Jump를 제어기로부터 격리한다.** 글로벌 EKF는 GNSS 보정을 차량 위치가 아니라 **`utm → odom` 오프셋(지도와 출발점 사이의 어긋남)에만** 조용히 반영한다. 그래서 GNSS가 튀어도 제어기가 보는 `odom → base_link`는 전혀 변하지 않는다.
+
+```
+utm ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
+      GNSS로 여기만 보정          절대 안 튐 (MPPI가 봄)
+
+GNSS 튐 → utm→odom 만 조정 → odom→base_link(제어용)는 그대로
+       → MPPI는 아무것도 감지 못 함 → 안정적 제어
+```
+
+비유하면 **로컬 EKF는 출발점 기준 "몇 걸음 걸었나"를 세는 만보기**(절대 안 틀리고 부드럽다)이고, **글로벌 EKF는 가끔 GPS를 보고 "출발점 자체가 2m 어긋나 있었네" 하며 지도를 슬쩍 미는 역할**이다. 만보기(제어기가 보는 값)는 건드리지 않고 지도만 민다. 이것이 본 매뉴얼 제목인 **듀얼 필터 아키텍처**의 존재 이유다. 상세 근거는 [4절 Node 2/3](#node-2-로컬-필터-ekf_node---local)에서 다룬다.
+
+### 1.2 활용 가능한 CARLA 센서 토픽
 
 | 센서 | 토픽 | ROS2 메시지 타입 |
 | :--- | :--- | :--- |
@@ -291,8 +320,9 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | `/wheel_encoder/data` | `twist.twist.linear.y = 0` | `vy` | 차량은 옆으로 미끄러지지 않는다는 비홀로노믹 제약 |
 | `/carla/car/imu/data` → `/imu/data` | `header.stamp` | — | IMU 측정 시각. wheel odom과 같은 `/clock` 기준이어야 함 |
 | `/carla/car/imu/data` → `/imu/data` | `angular_velocity.z` | `vyaw` | 차량의 상대 yaw rate. 회전 적분의 유일한 각속도 입력 |
+| `/carla/car/imu/data` → `/imu/data` | `linear_acceleration.x` | `ax` | 차량 종방향 선가속도. `vx` 예측을 고주기로 보강 (아래 "IMU 선가속도 성분(ax) 사용" 참고) |
 
-`/wheel_encoder/data`의 pose, `/wheel_encoder/data.twist.twist.angular.z`, IMU orientation, IMU linear acceleration은 로컬 EKF에서 사용하지 않는다. 로컬 회전량은 오직 `/imu/data.angular_velocity.z`에서 오며, 선속도는 오직 `/wheel_encoder/data.twist.twist.linear.x`와 `linear.y=0` 제약에서 온다.
+`/wheel_encoder/data`의 pose, `/wheel_encoder/data.twist.twist.angular.z`, IMU orientation, IMU `linear_acceleration.y/z`는 로컬 EKF에서 사용하지 않는다. 로컬 회전량은 오직 `/imu/data.angular_velocity.z`에서 오며, 선속도는 `/wheel_encoder/data.twist.twist.linear.x`(+ `linear.y=0` 제약)를 주 입력으로, `/imu/data.linear_acceleration.x`(ax)를 예측 보강 입력으로 사용한다.
 
 #### EKF 파라미터의 의미
 
@@ -317,10 +347,29 @@ local_ekf:
                   false, false, false,
                   false, false, false,
                   false, false, true,
-                  false, false, false]
+                  true,  false, false]   # vyaw + ax
 ```
 
-`odom0_config`에서 `vx`, `vy`만 `true`이므로 `/wheel_encoder/data`은 위치가 아니라 속도 측정으로만 쓰인다. `imu0_config`에서 `vyaw`만 `true`이므로 IMU는 yaw rate 측정으로만 쓰인다. `world_frame: odom`과 `publish_tf: true` 때문에 로컬 EKF는 `/odometry/local`과 함께 `odom → base_link` TF를 발행한다.
+`odom0_config`에서 `vx`, `vy`만 `true`이므로 `/wheel_encoder/data`은 위치가 아니라 속도 측정으로만 쓰인다. `imu0_config`에서 `vyaw`와 `ax`가 `true`이므로 IMU는 yaw rate 측정과 종방향 선가속도 측정으로 쓰인다. `world_frame: odom`과 `publish_tf: true` 때문에 로컬 EKF는 `/odometry/local`과 함께 `odom → base_link` TF를 발행한다.
+
+#### IMU 선가속도 성분(ax) 사용 — 로컬/글로벌 대칭 원칙
+
+`imu0_config`의 13번째 항목 `ax`를 `true`로 두어 IMU 종방향 선가속도(`linear_acceleration.x`)를 EKF 예측 단계에 추가한다. EKF는 이 가속도를 적분하여 `vx` 추정을 고주기(IMU 주기)로 보강한다. `ay`, `az`는 켜지 않는다 — `ay`는 `/wheel_encoder/data`의 `vy=0` 비홀로노믹 제약과 충돌하고(코너에서 원심 가속도 대 `vy=0`이 서로 싸움), `az`는 `two_d_mode: true`에서 무의미하기 때문이다.
+
+**핵심 — 이 설정은 `local_ekf`와 `global_ekf`에 반드시 동일하게 적용한다.** [1.1절](#11-왜-로컬글로벌-두-필터로-나누는가-설계-목적)에서 정의했듯 두 필터의 **유일한 차이는 GNSS 사용 여부**여야 한다. 두 EKF는 cascade(로컬 출력을 글로벌이 이어받음)가 아니라 **병렬(parallel)** 구조로, 각자 동일한 raw `/wheel_encoder/data` + `/imu/data`를 독립적으로 융합하고 글로벌만 `/odometry/gnss`(odom1)를 추가로 보정한다.
+
+```text
+로컬  = 예측(wheel vx + IMU wz + IMU ax)
+글로벌 = 예측(wheel vx + IMU wz + IMU ax) + 보정(GNSS x, y, yaw)
+         └────────────┬────────────┘
+              예측 모델은 두 필터가 동일해야 한다 → ax도 대칭
+```
+
+만약 `ax`를 로컬에만 켜면 두 필터의 예측 모델이 달라져 "차이는 GNSS뿐"이라는 설계 원칙이 깨진다. 따라서 `ax`를 도입할 때는 `local_ekf.imu0_config`와 `global_ekf.imu0_config`를 **함께** `vyaw + ax`로 맞춘다.
+
+> **참고 — cascade가 아닌 이유:** 로컬 출력 `/odometry/local`은 이미 wheel+IMU가 섞인 상관된(correlated) 추정치다. 이를 글로벌에 측정값으로 넣으면 정보가 이중 계산(double counting)되어 공분산이 과신되고 필터가 뒤틀린다. `robot_localization` 표준 듀얼 EKF(REP-105)가 두 필터를 병렬로 두는 이유가 이것이다.
+>
+> **효과에 대한 주의:** 현재 시뮬에서는 `/wheel_encoder/data`의 `vx`가 CARLA ground-truth라 `ax` 추가의 정확도 이득은 거의 없다. `ax`는 노이즈 있는 실차 휠 엔코더로 전환할 때(고주기 예측 보강) 실익이 커진다. 로컬은 보정이 없어 가속도 적분 드리프트 위험이 있으므로, `/path/odom` 궤적으로 개선 여부를 검증할 것.
 
 #### 로컬 EKF가 계산하는 움직임
 
@@ -438,7 +487,7 @@ EKF는 **예측(Prediction)** + **보정(Correction)** 2단계로 동작한다.
 
 | 입력 | 단계 | 역할 | 없으면? |
 | :--- | :--- | :--- | :--- |
-| `/wheel_encoder/data(vx, vy=0)` + `/imu/data(wz)` | 예측 | GNSS 업데이트(30Hz) 사이 구간에서 차량 이동을 물리 모델로 추정 | GNSS가 없는 구간(1/30초)마다 위치를 전혀 모름 |
+| `/wheel_encoder/data(vx, vy=0)` + `/imu/data(wz)` | 예측 | GNSS 업데이트(10Hz) 사이 구간에서 차량 이동을 물리 모델로 추정 | GNSS가 없는 구간(1/10초)마다 위치를 전혀 모름 |
 | `/odometry/gnss` (UTM x, y) | 보정 | 절대 위치로 누적된 드리프트를 보정 | 예측만 하고 보정이 없으므로 로컬 EKF와 동일하게 드리프트 누적 |
 | `/odometry/gnss` (azimuth yaw) | 보정 | 절대 헤딩으로 방향 드리프트를 보정 | 위치는 보정되지만 헤딩 오차가 남아, GNSS 업데이트마다 필터가 진동 |
 
@@ -570,14 +619,15 @@ local_ekf:
     odom0_differential: false
     odom0_relative: false
 
-    # IMU 설정 (Z축 각속도만 사용 / orientation은 dual GNSS azimuth로 대체)
+    # IMU 설정 (Z축 각속도 wz + 종방향 선가속도 ax / orientation은 dual GNSS azimuth로 대체)
+    # ay/az는 vy=0 제약·2D모드와 충돌하므로 false. global_ekf와 반드시 동일하게 유지.
     # launch에서 리매핑: /imu/data <- /carla/car/imu/data
     imu0: /imu/data
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
                   false, false, true,
-                  false, false, false]
+                  true,  false, false]   # vyaw + ax
     imu0_queue_size: 10
     imu0_nodelay: true
     imu0_differential: false
@@ -606,13 +656,14 @@ global_ekf:
     odom0_differential: false
     odom0_relative: false
 
+    # IMU 설정 (wz + ax) — local_ekf와 동일한 예측 모델 유지 (차이는 GNSS odom1뿐)
     # launch에서 리매핑: /imu/data <- /carla/car/imu/data
     imu0: /imu/data
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
                   false, false, true,
-                  false, false, false]
+                  true,  false, false]   # vyaw + ax
     imu0_queue_size: 10
     imu0_nodelay: true
     imu0_differential: false
@@ -733,9 +784,24 @@ CARLA synchronous/passive 환경에서는 simulation time과 wall time이 다를
 | `header.stamp` | CARLA IMU timestamp | 사용 |
 | `angular_velocity.z` | `-imu.gyroscope.z` | 사용 |
 | `orientation` | 채우지 않음, `orientation_covariance[0] = -1` | 사용 안 함 |
-| `linear_acceleration` | CARLA acceleration을 ROS Y-left로 변환 | 현재 EKF에서는 사용 안 함 |
+| `linear_acceleration.x` | CARLA acceleration을 ROS 좌표계로 변환 | 사용 (`ax`, EKF 예측 보강) |
+| `linear_acceleration.y/z` | CARLA acceleration을 ROS Y-left로 변환 | 사용 안 함 (`vy=0` 제약·2D 모드와 충돌) |
 
-CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=up`이다. 따라서 yaw-rate와 Y축 성분은 부호를 반전한다.
+CARLA는 `X=front, Y=right, Z=up`이고 ROS `base_link`는 `X=front, Y=left, Z=up`이다. 따라서 yaw-rate와 Y축 성분은 부호를 반전한다. `linear_acceleration.x`(ax)는 [4절 대칭 원칙](#imu-선가속도-성분ax-사용--로컬글로벌-대칭-원칙)에 따라 local/global EKF에 동일하게 입력된다.
+
+#### `/carla/car/f9r/fix`, `/carla/car/f9p/fix` — GNSS 발행 주기
+
+f9r/f9p GNSS는 `ros2_sensor/stack.json`의 각 센서 `attributes.sensor_tick`으로 발행 주기를 정한다. 현재 **`sensor_tick: 0.1` (10Hz)** 로 설정돼 있다.
+
+| 항목 | 값 |
+| :--- | :--- |
+| 설정 위치 | `ros2_sensor/stack.json` → `sensor.other.gnss`(f9r, f9p)의 `attributes.sensor_tick` |
+| 현재 값 | `0.1` 초 = **10Hz** |
+| 적용 방식 | `ros2_sensor.py`가 `bp.set_attribute("sensor_tick", ...)`로 CARLA blueprint에 전달 |
+
+* `sensor_tick`을 지정하지 않으면 GNSS는 매 시뮬레이션 틱마다(월드 FPS대로) 발행되어 불필요하게 빠르다. 실제 RTK 수신기 주기(보통 5~20Hz)에 맞춰 10Hz로 제한한다.
+* **f9r과 f9p는 반드시 같은 `sensor_tick`을 사용한다.** `azimuth_angle_calculator`가 두 fix의 타임스탬프 차이(`max_time_diff_sec`)로 동기 여부를 판정해 heading을 계산하므로, 주기가 다르면 dual GNSS azimuth 동기화가 깨진다.
+* global EKF는 이 10Hz GNSS 사이 구간(0.1초)을 wheel `vx` + IMU `wz`/`ax` 예측으로 메운다. 주기를 낮출수록 예측 의존 구간이 길어지므로, 너무 낮추면 GNSS 업데이트 순간의 위치 보정 폭(Jump 가능성)이 커진다. 10Hz는 실제 수신기 주기와 예측 안정성의 절충값이다.
 
 #### 센서 QoS (BEST_EFFORT vs RELIABLE)
 

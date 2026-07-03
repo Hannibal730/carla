@@ -37,15 +37,17 @@ local_ekf:
     odom0_differential: false
     odom0_relative: false
 
-    # /imu/data  — angular velocity z only
+    # /imu/data  — angular velocity z (wz) + longitudinal acceleration (ax)
     # (orientation disabled: dual GNSS azimuth is used instead via global EKF)
+    # ax(13번째)=true: IMU 종방향 선가속도로 vx 예측을 보강. ay/az는 vy=0 제약·2D모드와
+    # 충돌하므로 false 유지. 이 설정은 global_ekf와 반드시 동일해야 한다 (아래 3번 노드 참고).
     # launch remapping: /imu/data ← /carla/car/imu/data
     imu0: /imu/data
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
                   false, false, true,
-                  false, false, false]
+                  true,  false, false]
     imu0_queue_size: 10
     imu0_nodelay: true
     imu0_differential: false
@@ -80,14 +82,16 @@ global_ekf:
     odom0_differential: false
     odom0_relative: false
 
-    # /imu/data  — angular velocity z only, high-frequency prediction support
+    # /imu/data  — angular velocity z (wz) + longitudinal acceleration (ax)
+    # local_ekf와 동일한 예측 모델 유지: 두 필터의 유일한 차이는 GNSS(odom1) 사용 여부뿐이다.
+    # 따라서 ax 사용 여부도 local_ekf와 반드시 일치시킨다 (대칭).
     # launch remapping: /imu/data ← /carla/car/imu/data
     imu0: /imu/data
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
                   false, false, true,
-                  false, false, false]
+                  true,  false, false]
     imu0_queue_size: 10
     imu0_nodelay: true
     imu0_differential: false

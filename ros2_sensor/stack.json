@@ -61,6 +61,7 @@
             "id": "f9r",
             "spawn_point": {"x": 0.0, "y": 0.0, "z": 0.5, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "attributes": {
+                "sensor_tick": 0.1,
                 "noise_alt_stddev": 0.0,
                 "noise_lat_stddev": 0.0,
                 "noise_lon_stddev": 0.0,
@@ -74,6 +75,7 @@
             "id": "f9p",
             "spawn_point": {"x": 1.4, "y": 0.0, "z": 0.5, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "attributes": {
+                "sensor_tick": 0.1,
                 "noise_alt_stddev": 0.0,
                 "noise_lat_stddev": 0.0,
                 "noise_lon_stddev": 0.0,
