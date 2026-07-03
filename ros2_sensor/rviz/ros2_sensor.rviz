@@ -5,15 +5,10 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /Grid1
-        - /TF1
         - /TF1/Frames1
         - /TF1/Tree1
         - /Lidar1
         - /Lidar2D1
-        - /CSV Reference Path1
-        - /MarkerArray1
-        - /Local Costmap1
       Splitter Ratio: 0.6775068044662476
     Tree Height: 339
   - Class: rviz_common/Selection
@@ -173,7 +168,7 @@ Visualization Manager:
           Use rainbow: true
           Value: false
       Enabled: true
-      Name: Lidar
+      Name: Lidar3D
     - Class: rviz_common/Group
       Displays:
         - Alpha: 1
@@ -222,7 +217,7 @@ Visualization Manager:
       Length: 0.30000001192092896
       Line Style: Lines
       Line Width: 0.029999999329447746
-      Name: Odom Path
+      Name: Local EKF Path
       Offset:
         X: 0
         Y: 0
@@ -238,7 +233,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /path/odom
+        Value: /path/local_ekf
       Value: true
     - Alpha: 1
       Buffer Length: 1
@@ -423,7 +418,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 41.26799774169922
+      Distance: 22.907922744750977
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

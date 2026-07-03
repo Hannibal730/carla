@@ -369,7 +369,7 @@ local_ekf:
 
 > **참고 — cascade가 아닌 이유:** 로컬 출력 `/odometry/local`은 이미 wheel+IMU가 섞인 상관된(correlated) 추정치다. 이를 글로벌에 측정값으로 넣으면 정보가 이중 계산(double counting)되어 공분산이 과신되고 필터가 뒤틀린다. `robot_localization` 표준 듀얼 EKF(REP-105)가 두 필터를 병렬로 두는 이유가 이것이다.
 >
-> **효과에 대한 주의:** 현재 시뮬에서는 `/wheel_encoder/data`의 `vx`가 CARLA ground-truth라 `ax` 추가의 정확도 이득은 거의 없다. `ax`는 노이즈 있는 실차 휠 엔코더로 전환할 때(고주기 예측 보강) 실익이 커진다. 로컬은 보정이 없어 가속도 적분 드리프트 위험이 있으므로, `/path/odom` 궤적으로 개선 여부를 검증할 것.
+> **효과에 대한 주의:** 현재 시뮬에서는 `/wheel_encoder/data`의 `vx`가 CARLA ground-truth라 `ax` 추가의 정확도 이득은 거의 없다. `ax`는 노이즈 있는 실차 휠 엔코더로 전환할 때(고주기 예측 보강) 실익이 커진다. 로컬은 보정이 없어 가속도 적분 드리프트 위험이 있으므로, `/path/local_ekf` 궤적으로 개선 여부를 검증할 것.
 
 #### 로컬 EKF가 계산하는 움직임
 
@@ -860,7 +860,7 @@ f9r/f9p GNSS는 `ros2_sensor/stack.json`의 각 센서 `attributes.sensor_tick`�
 
 | 출력 Path | 입력 Odometry | Path frame | 의미 |
 | :--- | :--- | :--- | :--- |
-| `/path/odom` | `/odometry/local` | `odom` | GNSS 없이 wheel+IMU만 적분한 부드러운 odom-frame dead-reckoning 궤적 |
+| `/path/local_ekf` | `/odometry/local` | `odom` | GNSS 없이 wheel+IMU만 적분한 부드러운 odom-frame dead-reckoning 궤적 |
 | `/path/gnss` | `/odometry/gnss` | `utm` | EKF를 거치지 않은 GNSS 위치와 dual GNSS yaw 기반 절대 궤적 |
 | `/path/global_ekf` | `/odometry/global` | `utm` | wheel+IMU+GNSS를 융합한 global EKF 추정 궤적 |
 
@@ -868,11 +868,11 @@ f9r/f9p GNSS는 `ros2_sensor/stack.json`의 각 센서 `attributes.sensor_tick`�
 
 | RViz 표시 이름 | 토픽 | 해석 |
 | :--- | :--- | :--- |
-| Odom Path | `/path/odom` | local EKF dead-reckoning 결과 |
+| Local EKF Path | `/path/local_ekf` | local EKF dead-reckoning 결과 |
 | GNSS Path | `/path/gnss` | dual GNSS 기반 절대 궤적 |
 | Global EKF Path | `/path/global_ekf` | global EKF 융합 결과 |
 
-`/path/odom`은 제어 안정성 확인용이고, `/path/gnss`는 GNSS 변환 결과가 CARLA 주행 궤적과 맞는지 확인하는 전역 기준 궤적이다. `/path/global_ekf`는 global EKF가 GNSS 원천 궤적을 얼마나 부드럽게 따라가며 `utm→odom` 보정을 만드는지 확인하는 용도이다. RViz는 `use_sim_time:=true`로 실행해야 Path와 TF가 같은 시간축에서 표시된다.
+`/path/local_ekf`는 제어 안정성 확인용이고, `/path/gnss`는 GNSS 변환 결과가 CARLA 주행 궤적과 맞는지 확인하는 전역 기준 궤적이다. `/path/global_ekf`는 global EKF가 GNSS 원천 궤적을 얼마나 부드럽게 따라가며 `utm→odom` 보정을 만드는지 확인하는 용도이다. RViz는 `use_sim_time:=true`로 실행해야 Path와 TF가 같은 시간축에서 표시된다.
 
 ---
 
@@ -1094,7 +1094,7 @@ MPPI는 path를 직접 만들지 않는다. `controller_server`가 FollowPath ac
 | 최종 goal | path 마지막 pose 또는 action goal | 아니오 | FollowPath action goal 제공 |
 | transformed local plan | controller server 내부 생성 | Nav2가 생성 | TF와 path가 정상이어야 함 |
 
-주의: `/path/odom`, `/path/gnss`, `/path/global_ekf`는 RViz에서 실제 주행 궤적을 확인하기 위한 출력이다. 이들은 “따라가야 할 계획 경로”가 아니라 “이미 지나온 경로 기록”이므로 MPPI의 global plan으로 넣으면 안 된다.
+주의: `/path/local_ekf`, `/path/gnss`, `/path/global_ekf`는 RViz에서 실제 주행 궤적을 확인하기 위한 출력이다. 이들은 “따라가야 할 계획 경로”가 아니라 “이미 지나온 경로 기록”이므로 MPPI의 global plan으로 넣으면 안 된다.
 
 ### 8.6 Costmap과 장애물 정보
 

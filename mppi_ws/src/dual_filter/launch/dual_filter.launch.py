@@ -110,16 +110,16 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # Node 4a: Odom path  →  /path/odom  (dead-reckoning, odom frame)
+    # Node 4a: Local EKF path  →  /path/local_ekf  (dead-reckoning, odom frame)
     # ------------------------------------------------------------------
-    odom_path = Node(
+    local_ekf_path = Node(
         package='dual_filter',
         executable='path_visualizer',
-        name='odom_path_publisher',
+        name='local_ekf_path_publisher',
         output='screen',
         parameters=[sim_time_param, {
             'odom_topic': '/odometry/local',
-            'path_topic': '/path/odom',
+            'path_topic': '/path/local_ekf',
             'frame_id':   'odom',
         }],
     )
@@ -161,7 +161,7 @@ def generate_launch_description():
         gnss_to_odom,
         local_ekf,
         global_ekf,
-        odom_path,
+        local_ekf_path,
         gnss_path,
         global_ekf_path,
     ])
