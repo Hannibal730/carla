@@ -7,7 +7,7 @@ XODR(OpenDRIVE)을 CARLA로 오프라인 파싱하여 모든 레인(주행/주�
 마우스를 올리면 해당 픽셀의 CARLA (x, y) 좌표(미터)가 표시된다.
 
 사용:
-    python visualize_map.py MandoParking2
+    python visualize_map.py MandoParking5
     python visualize_map.py CustomMap/MandoParking2/Mando2.xodr
     python visualize_map.py MandoParking2 --step 0.3 --size 1400
 """

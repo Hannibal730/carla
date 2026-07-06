@@ -2073,15 +2073,26 @@ python PythonAPI/util/config.py --map Town01_Opt \
      --spawn-x 299.4 --spawn-y 133.24 --spawn-z 0.3 --spawn-yaw 0.0
 ```
 
-**만도맵 (Mando1 / Mando2 / Mando3) 버전:** `--map`에 `Mando1` / `Mando2` / `Mando3` 중 하나를 지정한다(사용할 맵이 import 돼 있어야 함, Section 15). `Mando3`은 레퍼런스 경로 기록을 위해 장애물을 제거한 버전(`CustomMap/MandoParking3`)으로, 도로 형상·스폰 좌표는 `Mando1`/`Mando2`와 동일하다.
+**만도맵 (Mando1 / Mando2 / Mando3 / Mando5) 버전:** `--map`에 `Mando1` / `Mando2` / `Mando3` / `Mando5` 중 하나를 지정한다(사용할 맵이 import 돼 있어야 함, Section 15). `Mando3`은 레퍼런스 경로 기록을 위해 장애물을 제거한 버전(`CustomMap/MandoParking3`)으로 도로 형상·스폰 좌표는 `Mando1`/`Mando2`와 동일하다. `Mando5`(`CustomMap/MandoParking5`)는 도로 범위가 더 넓은 별도 맵(주행 차선 x[-159.8~57.2] y[-88.2~44.1])이라 스폰 좌표가 다르다 — 15.7 E-2로 원하는 위치를 차선에 스냅해 구한다.
 
 ```bash
+# Mando1/Mando2/Mando3 (동일 차선, 스폰 -93.6/0.0/yaw-90)
 cd ~/carla
 source .venv/bin/activate
-python PythonAPI/util/config.py --map Mando2 \
+python PythonAPI/util/config.py --map Mando5 \
   && python PythonAPI/examples/manual_control.py --rolename car \
      --filter vehicle.micro.microlino --generation 2 --sync \
      --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
+```
+
+```bash
+# Mando5 (넓은 맵, 스폰 좌표 예시 — 실제 위치는 15.7 E-2로 산출)
+cd ~/carla
+source .venv/bin/activate
+python PythonAPI/util/config.py --map Mando5 \
+  && python PythonAPI/examples/manual_control.py --rolename car \
+     --filter vehicle.micro.microlino --generation 2 --sync \
+     --spawn-x -59.6 --spawn-y -22.2 --spawn-z 0.3 --spawn-yaw -89.5
 ```
 
 #### 터미널 3 — 센서 브리지 (`/clock` 포함)
@@ -3730,7 +3741,7 @@ global_ekf:
 
 ---
 
-## 15. 커스텀 맵(RoadRunner) CARLA 적용 매뉴얼 — `Mando1` / `Mando2` / `Mando3` 사례
+## 15. 커스텀 맵(RoadRunner) CARLA 적용 매뉴얼 — `Mando1` / `Mando2` / `Mando3` / `Mando5` 사례
 
 > **이 섹션의 목적**: MATLAB RoadRunner로 제작한 커스텀 맵(`.fbx` + `.xodr`)을 CARLA에 적용해
 > Section 12.1 자율주행/주차 스택에서 사용하는 **전 과정**을 기록한다. 맵을 수정해 다시
@@ -3742,8 +3753,10 @@ global_ekf:
 >   - `/home/hannibal/carla/CustomMap/MandoParking1/` (`Mando1.fbx`, `Mando1.xodr`, `Mando1.rrdata.xml`) → 맵 **`Mando1`**
 >   - `/home/hannibal/carla/CustomMap/MandoParking2/` (`Mando2.fbx`, `Mando2.xodr`, `Mando2.rrdata.xml`, `Mando2.geojson`) → 맵 **`Mando2`**. `Mando2.geojson`은 `.rrdata.xml`과 마찬가지로 import에 **사용하지 않음**
 >   - `/home/hannibal/carla/CustomMap/MandoParking3/` (`Mando3.fbx`, `Mando3.xodr`, `Mando3.rrdata.xml`, `Mando3.geojson`) → 맵 **`Mando3`**. 레퍼런스 경로 기록을 위해 장애물을 제거한 버전. `.rrdata.xml`·`.geojson`은 import에 **사용하지 않음**
->   - basename(`Mando1`/`Mando2`/`Mando3`)이 곧 CARLA 맵 이름. `--map Mando1` / `--map Mando2` / `--map Mando3`로 선택
-> - 적용 결과 맵 이름: **`Mando1`**, **`Mando2`**, **`Mando3`** (셋 다 패키지 **`map_package`** 안에 공존)
+>   - `/home/hannibal/carla/CustomMap/MandoParking5/` (`Mando5.fbx`, `Mando5.xodr`, `Mando5.rrdata.xml`, `Mando5.geojson`) → 맵 **`Mando5`**. 도로 범위가 더 넓은 별도 맵(주행 차선 x[-159.8~57.2] y[-88.2~44.1], 52 roads/4 junctions). `.rrdata.xml`·`.geojson`은 import에 **사용하지 않음**
+>   - (참고) `MandoParking4`는 RoadRunner 원본 `.xodr`가 손상돼(`</OpenDRIVE>` 태그 3개, XML malformed) import 불가 — 재익스포트 필요
+>   - basename(`Mando1`/`Mando2`/`Mando3`/`Mando5`)이 곧 CARLA 맵 이름. `--map Mando1` / `--map Mando2` / `--map Mando3` / `--map Mando5`로 선택
+> - 적용 결과 맵 이름: **`Mando1`**, **`Mando2`**, **`Mando3`**, **`Mando5`** (모두 패키지 **`map_package`** 안에 공존)
 
 ---
 
@@ -3968,7 +3981,7 @@ python3 - <<'PY'
 import carla, time
 c = carla.Client('localhost', 2000); c.set_timeout(60.0)
 maps = [m.split('/')[-1] for m in c.get_available_maps()]
-for name in ('Mando1', 'Mando2', 'Mando3'):
+for name in ('Mando1', 'Mando2', 'Mando3', 'Mando5'):
     assert name in maps, f'{name} 없음: {maps}'
     w = c.load_world(name); time.sleep(2.0)
     m = w.get_map()
@@ -3980,7 +3993,7 @@ PY
 ```
 
 `Mando1`/`Mando2`/`Mando3`의 주행 차선 범위(참고): **x[-113.7 ~ -93.6], y[-59.4 ~ 0]** (≈20×60 m 소규모
-주차장형). 세 맵은 같은 만도 주차장 기반이라 범위가 거의 동일하나(`Mando3`은 장애물만 제거), 형상을 수정했다면 맵별로 재확인.
+주차장형). 세 맵은 같은 만도 주차장 기반이라 범위가 거의 동일하나(`Mando3`은 장애물만 제거), 형상을 수정했다면 맵별로 재확인. `Mando5`는 더 넓은 별도 맵으로 주행 차선 범위가 **x[-159.8 ~ 57.2], y[-88.2 ~ 44.1]** (52 roads/4 junctions)이므로 스폰 좌표를 15.7 E-2로 반드시 재산출한다.
 
 > **버전 경고는 무해**: 클라이언트가 `WARNING: Version mismatch ... Client API = 294096eb1-dirty,
 > Simulator API = 0.9.16`를 띄운다. 이는 Step B의 `PythonAPI.wheel` 빌드가 소스 빌드 wheel을 venv에
@@ -4010,7 +4023,7 @@ python PythonAPI/util/config.py --map Town01_Opt \
      --spawn-x 299.4 --spawn-y 133.24 --spawn-z 0.3 --spawn-yaw 0.0
 ```
 
-**만도맵 (Mando1 / Mando2 / Mando3) 버전:** `--map`에 `Mando1` / `Mando2` / `Mando3` 지정.
+**만도맵 (Mando1 / Mando2 / Mando3 / Mando5) 버전:** `--map`에 `Mando1` / `Mando2` / `Mando3` / `Mando5` 지정 (`Mando5`는 스폰 좌표가 다름 — 아래 E-2로 산출).
 
 ```bash
 cd ~/carla && source .venv/bin/activate
@@ -4224,16 +4237,19 @@ RoadRunner에서 맵을 수정·재익스포트한 뒤 적용하려면 아래만
 python3 -m pip install build wheel
 
 # [1] 새 익스포트물 복사 (basename = 맵 이름 유지). 갱신할 맵의 쌍을 모두 복사
+#     한 맵만 갱신할 거면 그 한 쌍만 복사하고, Import/의 기존 map_package.json은 반드시 지운다(A-1 함정)
 cp ~/carla/CustomMap/MandoParking1/Mando1.fbx ~/carla/CustomMap/MandoParking1/Mando1.xodr \
    ~/carla/CustomMap/MandoParking2/Mando2.fbx ~/carla/CustomMap/MandoParking2/Mando2.xodr \
    ~/carla/CustomMap/MandoParking3/Mando3.fbx ~/carla/CustomMap/MandoParking3/Mando3.xodr \
+   ~/carla/CustomMap/MandoParking5/Mando5.fbx ~/carla/CustomMap/MandoParking5/Mando5.xodr \
    ~/carla-0.9.16-source/Import/
+rm -f ~/carla-0.9.16-source/Import/map_package.json ~/carla-0.9.16-source/Import/roadpainter_decals.json
 
 # [2] 에디터 콘텐츠로 쿠킹
 cd ~/carla-0.9.16-source && export UE4_ROOT=/home/hannibal/UnrealEngine_4.26
 make import
 
-# [3] 배포 .tar.gz 쿠킹 (map_package = Mando1+Mando2+Mando3)
+# [3] 배포 .tar.gz 쿠킹 (map_package = Import/에 넣은 맵들)
 make package ARGS="--packages=map_package"
 
 # [4] 패키지 빌드에 임포트

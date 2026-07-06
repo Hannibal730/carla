@@ -28,3 +28,13 @@ PythonAPI/**/*.py[cod]
 !/*.ino
 
 !/CustomMap
+
+# Keep the cooked custom maps (CarlaUE4/Content/map_package) but nothing else
+# under CarlaUE4/. Each directory level must be un-ignored because line 2 `/*`
+# excludes the top-level CarlaUE4/, and git can't re-include a path whose parent
+# directory is ignored.
+!/CarlaUE4/
+/CarlaUE4/*
+!/CarlaUE4/Content/
+/CarlaUE4/Content/*
+!/CarlaUE4/Content/map_package

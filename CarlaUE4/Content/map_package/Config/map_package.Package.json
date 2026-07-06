@@ -1,0 +1,10 @@
+{
+    "props": [],
+    "maps": [
+        {
+            "name": "Mando5",
+            "path": "/Game/map_package/Maps/Mando5",
+            "use_carla_materials": true
+        }
+    ]
+}
