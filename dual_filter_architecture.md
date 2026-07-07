@@ -70,8 +70,8 @@ GNSS 튐 → utm→odom 만 조정 → odom→base_link(제어용)는 그대로
 | 후방 카메라 (주차용) | `/carla/car/rear_cam/image` | `sensor_msgs/msg/Image` |
 | LiDAR (3D) | `/carla/car/lidar_3d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
 | LiDAR (2D) | `/carla/car/lidar_2d/point_cloud` | `sensor_msgs/msg/PointCloud2` |
-| GNSS (후륜축) | `/carla/car/f9r/fix` | `sensor_msgs/msg/NavSatFix` |
-| GNSS (전방 1.4m) | `/carla/car/f9p/fix` | `sensor_msgs/msg/NavSatFix` |
+| GNSS (전방 1.4m) | `/carla/car/f9r/fix` | `sensor_msgs/msg/NavSatFix` |
+| GNSS (후륜축) | `/carla/car/f9p/fix` | `sensor_msgs/msg/NavSatFix` |
 | IMU | `/carla/car/imu/data` | `sensor_msgs/msg/Imu` |
 
 ---
@@ -133,8 +133,8 @@ utm ──[global_ekf]──> odom ──[local_ekf]──> base_link
 
 ```
 현재 설정 (gnss_to_odom.py):
-  datum_easting  = 첫 번째 f9r GNSS 수신 시의 UTM easting
-  datum_northing = 첫 번째 f9r GNSS 수신 시의 UTM northing
+  datum_easting  = 첫 번째 f9p GNSS 수신 시의 UTM easting
+  datum_northing = 첫 번째 f9p GNSS 수신 시의 UTM northing
 
 → datum이 실행마다 달라지므로 utm 원점도 실행마다 달라진다.
   datum을 고정 UTM 값으로 하드코딩하면 utm 원점도 항상 일정해진다.
@@ -240,8 +240,8 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | :--- | :--- | :--- | :--- | :--- |
 | **`ros2_sensor.py`** (`vehicle.get_velocity()` CARLA 물리 엔진 ground truth) | `/carla/car/wheel_encoder/data` | `/wheel_encoder/data` | `nav_msgs/Odometry` | `twist.twist.linear.x`, `twist.twist.linear.y = 0` |
 | **IMU** | `/carla/car/imu/data` | `/imu/data` (리매핑) | `sensor_msgs/Imu` | `angular_velocity.z` |
-| **GNSS (후륜축)** | `/carla/car/f9r/fix` | `/f9r/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
-| **GNSS (전방 1.4m)** | `/carla/car/f9p/fix` | `/f9p/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
+| **GNSS (전방 1.4m)** | `/carla/car/f9r/fix` | `/f9r/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
+| **GNSS (후륜축)** | `/carla/car/f9p/fix` | `/f9p/fix` (리매핑) | `sensor_msgs/NavSatFix` | `latitude`, `longitude`, `altitude`, `status` |
 
 ### 3.1 EKF가 실제로 사용하는 메시지 필드
 
@@ -255,10 +255,10 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | `/wheel_encoder/data` | `nav_msgs/Odometry` | `twist.twist.linear.y = 0` | local/global EKF | 비홀로노믹 제약, 옆미끄럼 없음 `vy=0` |
 | `/carla/car/imu/data` | `sensor_msgs/Imu` | `header.stamp` | local/global EKF | IMU 측정 시각 |
 | `/carla/car/imu/data` | `sensor_msgs/Imu` | `angular_velocity.z` | local/global EKF | yaw rate `wz` |
-| `/carla/car/f9r/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9r_to_utm`, `azimuth_angle_calculator` | 후륜축 GNSS 위치와 heading 기준점 |
-| `/carla/car/f9p/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9p_to_utm`, `azimuth_angle_calculator` | 전방 GNSS 위치와 heading 벡터 끝점 |
-| `/f9r_utm` | `geometry_msgs/PointStamped` | `header.stamp`, `point.x`, `point.y`, `point.z` | `gnss_to_odom` | f9r UTM 위치 |
-| `/azimuth_angle` | `std_msgs/Float64` | `data` | `gnss_to_odom` | f9r→f9p geographic bearing |
+| `/carla/car/f9r/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9r_to_utm`, `azimuth_angle_calculator` | 전방 GNSS 위치와 heading 벡터 끝점 |
+| `/carla/car/f9p/fix` | `sensor_msgs/NavSatFix` | `header.stamp`, `latitude`, `longitude`, `altitude` | `f9p_to_utm`, `azimuth_angle_calculator` | 후륜축 GNSS 위치와 heading 기준점 |
+| `/f9p_utm` | `geometry_msgs/PointStamped` | `header.stamp`, `point.x`, `point.y`, `point.z` | `gnss_to_odom` | f9p(후륜축) UTM 위치 |
+| `/azimuth_angle` | `std_msgs/Float64` | `data` | `gnss_to_odom` | f9p→f9r geographic bearing |
 | `/odometry/gnss` | `nav_msgs/Odometry` | `pose.pose.position.x`, `pose.pose.position.y`, `pose.pose.orientation` | global EKF | 절대 위치와 절대 yaw 보정 |
 
 `robot_localization`의 `*_config` 배열 순서는 다음과 같다.
@@ -285,14 +285,14 @@ EKF 노드에 입력되는 토픽 목록이다. CARLA 원본 토픽명과 EKF �
 | :--- | :--- | :--- | :--- |
 | `f9r_to_utm` | `/f9r_utm` | `geometry_msgs/PointStamped` | f9r의 UTM 좌표 (easting, northing) |
 | `f9p_to_utm` | `/f9p_utm` | `geometry_msgs/PointStamped` | f9p의 UTM 좌표 (easting, northing) |
-| `azimuth_angle_calculator` | `/azimuth_angle` | `std_msgs/Float64` | f9p − f9r 차분으로 계산된 차량 헤딩(**도°**, geographic N=0 CW+) |
-| `gnss_to_odom` | `/odometry/gnss` | `nav_msgs/Odometry` | 글로벌 EKF 입력용 — f9r UTM 위치 + azimuth yaw를 단일 Odometry로 합성 |
-| `gnss_to_odom` | `/utm_datum` | `geometry_msgs/PointStamped` | 최초 f9r GNSS 수신 시의 UTM easting/northing을 datum으로 래치 (QoS: transient_local) → `csv_to_utm`이 구독하여 경로 좌표 변환에 사용 |
+| `azimuth_angle_calculator` | `/azimuth_angle` | `std_msgs/Float64` | f9r − f9p 차분(후륜축→전방)으로 계산된 차량 헤딩(**도°**, geographic N=0 CW+) |
+| `gnss_to_odom` | `/odometry/gnss` | `nav_msgs/Odometry` | 글로벌 EKF 입력용 — f9p(후륜축) UTM 위치 + azimuth yaw를 단일 Odometry로 합성 |
+| `gnss_to_odom` | `/utm_datum` | `geometry_msgs/PointStamped` | 최초 f9p GNSS 수신 시의 UTM easting/northing을 datum으로 래치 (QoS: transient_local) → `csv_to_utm`이 구독하여 경로 좌표 변환에 사용 |
 
 > **토픽 리매핑:** launch 파일에서 CARLA 토픽명 → gnss_to_utm 내부 토픽명으로 리매핑.
 > `/f9r/fix` ← `/carla/car/f9r/fix`, `/f9p/fix` ← `/carla/car/f9p/fix`
 >
-> **`gnss_to_odom` 구현:** `/f9r_utm` (PointStamped)와 `/azimuth_angle` (Float64, 도°)를 구독.
+> **`gnss_to_odom` 구현:** `/f9p_utm` (PointStamped, 후륜축)와 `/azimuth_angle` (Float64, 도°)를 구독.
 > `azimuth_angle_calculator`가 발행하는 값은 **geographic bearing (N=0, CW+, 도°)** 이므로, 먼저 **ENU yaw (E=0, CCW+, rad)** 로 변환한 뒤 CARLA의 `+Y=right` 좌표계를 ROS `+Y=left` 좌표계에 맞추기 위해 Y축과 yaw 부호를 반전한다.
 >
 > ```text
@@ -700,14 +700,14 @@ mppi_ws/
 │   │   │   ├── f9p_to_utm.cpp           ← NavSatFix → /f9p_utm (PointStamped)
 │   │   │   ├── azimuth_angle_calculator.cpp ← dual GNSS → /azimuth_angle (Float64)
 │   │   │   ├── csv_to_utm.cpp           ← /utm_datum → /csv_path (Path, utm frame)
-│   │   │   └── f9r_to_csv.py            ← 오프라인 도구: rosbag → UTM CSV 변환
+│   │   │   └── f9p_to_csv.py            ← 오프라인 도구: rosbag → UTM CSV 변환
 │   │   ├── config/csv_to_utm.yaml       ← csv_file_path 파라미터
 │   │   └── launch/csv_to_utm.launch.py
 │   └── dual_filter/             ← ament_python 패키지
 │       ├── package.xml
 │       ├── setup.py / setup.cfg
 │       ├── dual_filter/
-│       │   ├── gnss_to_odom.py        ← Node 1d: /f9r_utm + /azimuth_angle → /odometry/gnss + /utm_datum
+│       │   ├── gnss_to_odom.py        ← Node 1d: /f9p_utm + /azimuth_angle → /odometry/gnss + /utm_datum
 │       │   ├── path_visualizer.py     ← Odometry → Path 누적 발행 (3개 인스턴스)
 │       │   ├── cmd_vel_to_carla.py    ← /cmd_vel (Twist) → CARLA VehicleControl
 │       │   ├── follow_path_client.py  ← IDLE/CSV_FOLLOWING/PARKING 상태 머신 — CSV 추종 ↔ 주차 모드 전환
@@ -729,7 +729,7 @@ mppi_ws/
 
 * **역할:** Node 1의 최종 브리지 — UTM 위치와 방위각을 하나의 `nav_msgs/Odometry`로 묶어 글로벌 EKF에 전달. 최초 수신 시 datum을 래치하여 `/utm_datum`으로 발행.
 * **구독:**
-  * `/f9r_utm` (`geometry_msgs/PointStamped`) — f9r의 UTM easting/northing
+  * `/f9p_utm` (`geometry_msgs/PointStamped`) — f9p(후륜축)의 UTM easting/northing
   * `/azimuth_angle` (`std_msgs/Float64`) — geographic bearing, **도°**, N=0 CW+
 * **발행:**
   * `/odometry/gnss` (`nav_msgs/Odometry`) — 글로벌 EKF 입력
@@ -1849,24 +1849,25 @@ MPPI가 추종할 경로는 **실제 주행 데이터를 녹화 → UTM CSV 변�
 
 | 스크립트 | 경로 |
 | :--- | :--- |
-| `f9r_to_csv.py` | `mppi_ws/src/gnss_to_utm/src/f9r_to_csv.py` |
+| `f9p_to_csv.py` | `mppi_ws/src/gnss_to_utm/src/f9p_to_csv.py` |
 | `csv_interpolater.py` | `mppi_ws/src/gnss_to_utm/src/csv_interpolater.py` |
 
 ---
 
 ### Step 1 — 주행 경로 ROS2 bag 녹화
 
-레퍼런스 경로를 주행하면서 F9R GNSS 토픽을 bag으로 기록한다.
+레퍼런스 경로를 주행하면서 후륜축 GNSS(F9P) 토픽을 bag으로 기록한다.
+(센서 위치 교체 후 후륜축 = f9p. 레퍼런스 경로는 base_link 원점 궤적 기준이어야 한다.)
 
 ```bash
 # 저장 경로는 자유롭게 지정
-ros2 bag record /carla/car/f9r/fix \
+ros2 bag record /carla/car/f9p/fix \
   -o ~/carla/mppi_ws/src/gnss_to_utm/gnss_data/ros2bag/route_1
 ```
 
 | 항목 | 내용 |
 | :--- | :--- |
-| 녹화 토픽 | `/carla/car/f9r/fix` |
+| 녹화 토픽 | `/carla/car/f9p/fix` |
 | 메시지 타입 | `sensor_msgs/NavSatFix` |
 | 필드 | `latitude`, `longitude` (WGS84 도 단위) |
 | storage | sqlite3 (ROS2 Humble 기본값) |
@@ -1877,21 +1878,21 @@ ros2 bag record /carla/car/f9r/fix \
 
 ---
 
-### Step 2 — bag → 원시 UTM CSV 변환 (`f9r_to_csv.py`)
+### Step 2 — bag → 원시 UTM CSV 변환 (`f9p_to_csv.py`)
 
 ```bash
-# f9r_to_csv.py 상단의 경로를 녹화한 bag에 맞게 수정 후 실행
+# f9p_to_csv.py 상단의 경로를 녹화한 bag에 맞게 수정 후 실행
 # bag_path  : 녹화한 bag 디렉토리 경로 (확장자 없이)
 # csv_path  : 출력 CSV 경로 (자동 생성됨)
 
 cd ~/carla/mppi_ws/src/gnss_to_utm/src
-python3 f9r_to_csv.py
+python3 f9p_to_csv.py
 ```
 
 스크립트 상단의 두 경로를 직접 편집해야 한다:
 
 ```python
-# f9r_to_csv.py 17~24번째 줄
+# f9p_to_csv.py 17~24번째 줄
 bag_path = "/home/hannibal/carla/mppi_ws/src/gnss_to_utm/gnss_data/ros2bag/route_1"
 csv_path = "/home/hannibal/carla/mppi_ws/src/gnss_to_utm/gnss_data/csv/route_1.csv"
 ```
@@ -1978,12 +1979,12 @@ csv_to_utm:
 ### 전체 흐름 요약
 
 ```text
-① ros2 bag record /carla/car/f9r/fix
+① ros2 bag record /carla/car/f9p/fix
         │  (주행 중 GNSS NavSatFix 녹화)
         ▼
    route_1/  (sqlite3 bag)
         │
-② python3 f9r_to_csv.py
+② python3 f9p_to_csv.py
         │  (bag → UTM 변환, 점 간격 ~1 m)
         ▼
    route_1.csv  [X(E/m), Y(N/m)]
@@ -4151,7 +4152,7 @@ CARLA world (x, y)
 위경도 (lat, lon)
    │  ② to_utm(lat, lon)   (visualize_map.py, gnss_to_utm/utm_converter.hpp 와 동일한 표준 WGS84 UTM)
    ▼
-절대 UTM (E, N)            ← /f9r_utm 과 동일한 값
+절대 UTM (E, N)            ← /f9p_utm 과 동일한 값
    │  ③ (E − datum_E), −(N − datum_N)   ← gnss_to_odom.py datum 적용 + CARLA +Y=right 미러링
    ▼
 ROS utm 프레임 (x_ros, y_ros)

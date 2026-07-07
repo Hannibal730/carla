@@ -21,8 +21,8 @@ public:
     : Node("azimuth_angle_calculate_node"), current_mission_state_("UNKNOWN")
     {
         // 파라미터 선언 (토픽 이름, 동기화 시간 임계값 등)
-        this->declare_parameter<std::string>("gnss1_topic", "/f9r/fix"); // 차량 뒤쪽
-        this->declare_parameter<std::string>("gnss2_topic", "/f9p/fix"); // 차량 앞쪽
+        this->declare_parameter<std::string>("gnss1_topic", "/f9p/fix"); // 차량 뒤쪽 (후륜축)
+        this->declare_parameter<std::string>("gnss2_topic", "/f9r/fix"); // 차량 앞쪽
         this->declare_parameter<std::string>("yaw_topic", "/azimuth_angle");
         this->declare_parameter<double>("max_time_diff_sec", 0.1);
         this->declare_parameter<std::string>("mission_state_topic", "/mission_state");
@@ -108,8 +108,8 @@ private:
         double lon2 = gnss2_fix_->longitude * M_PI / 180.0;
 
         // 방위각(Bearing) 계산
-        // GNSS1을 기준점으로 GNSS2의 방향을 계산합니다. 
-        // f9r이 뒤쪽, f9p가 앞쪽이므로 f9r -> f9p 방향이 차량의 진행 방향
+        // GNSS1을 기준점으로 GNSS2의 방향을 계산합니다.
+        // f9p가 뒤쪽(후륜축), f9r이 앞쪽이므로 f9p -> f9r 방향이 차량의 진행 방향
         double dLon = lon2 - lon1;
         double y = std::sin(dLon) * std::cos(lat2);
         double x = std::cos(lat1) * std::sin(lat2) - std::sin(lat1) * std::cos(lat2) * std::cos(dLon);

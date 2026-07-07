@@ -1,5 +1,5 @@
 """
-/f9r_utm (PointStamped)  +  /azimuth_angle (Float64, degrees, geo N=0 CW+)
+/f9p_utm (PointStamped)  +  /azimuth_angle (Float64, degrees, geo N=0 CW+)
 →  /odometry/gnss (Odometry, CARLA-aligned utm frame)
 
 Conversion:
@@ -8,10 +8,11 @@ Conversion:
   x_ros   =  (easting  − datum_easting)
   y_ros   = −(northing − datum_northing)  ← 동일 보정
 
-f9r GNSS 센서는 stack.json 에서 spawn_point x=0,y=0 으로 설정돼 있어
+f9p GNSS 센서는 stack.json 에서 spawn_point x=0,y=0 으로 설정돼 있어
 후륜축(= base_link 원점)에 정확히 위치한다. 별도 오프셋 보정 불필요.
+(f9r은 전방 x=1.4 — heading 벡터 끝점으로만 사용)
 
-datum: 최초 f9r 수신 시의 UTM 좌표를 래치. 이 점이 utm 프레임 (0,0)이 된다.
+datum: 최초 f9p 수신 시의 UTM 좌표를 래치. 이 점이 utm 프레임 (0,0)이 된다.
 """
 import math
 
@@ -32,7 +33,8 @@ class GnssToOdom(Node):
         self._datum_x: float | None = None      # first UTM easting  (utm 원점)
         self._datum_y: float | None = None      # first UTM northing (utm 원점)
 
-        self.create_subscription(PointStamped, '/f9r_utm', self._utm_cb, 10)
+        # 위치 기준 = 후륜축 센서 (센서 위치 교체 후 f9p가 후륜축 x=0)
+        self.create_subscription(PointStamped, '/f9p_utm', self._utm_cb, 10)
         self.create_subscription(Float64, '/azimuth_angle', self._azimuth_cb, 10)
         self._pub = self.create_publisher(Odometry, '/odometry/gnss', 10)
 

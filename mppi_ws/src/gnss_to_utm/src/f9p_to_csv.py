@@ -24,7 +24,9 @@ def main():
     csv_path = os.path.join("/home/hannibal/carla/mppi/src/gnss_to_utm/gnss_data/csv", csv_filename)
     # ---------------------
 
-    topic_name = "/carla/car/f9r/fix"
+    # 레퍼런스 경로는 후륜축(base_link 원점) 궤적 기준.
+    # 센서 위치 교체 후 후륜축 센서는 f9p (f9r은 전방 1.4m).
+    topic_name = "/carla/car/f9p/fix"
 
     print(f"Input bag path: {bag_path}")
     print(f"Output CSV path: {csv_path}")

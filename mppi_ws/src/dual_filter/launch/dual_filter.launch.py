@@ -58,8 +58,10 @@ def generate_launch_description():
         name='azimuth_angle_calculator',
         output='screen',
         parameters=[sim_time_param, {
-            'gnss1_topic': '/carla/car/f9r/fix',
-            'gnss2_topic': '/carla/car/f9p/fix',
+            # gnss1 = 기준점(차량 뒤쪽 = 후륜축), gnss2 = 벡터 끝점(차량 앞쪽)
+            # 센서 위치 교체 후: f9p가 후륜축(x=0), f9r이 전방(x=1.4)
+            'gnss1_topic': '/carla/car/f9p/fix',
+            'gnss2_topic': '/carla/car/f9r/fix',
             'max_time_diff_sec': 0.5,
         }],
     )

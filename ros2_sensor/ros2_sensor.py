@@ -449,7 +449,7 @@ class PythonRos2Publisher:
         msg.angular_velocity.x =  imu.gyroscope.x
         msg.angular_velocity.y = -imu.gyroscope.y
         msg.angular_velocity.z = -imu.gyroscope.z   # ROS convention: CCW(좌회전) = positive
-        msg.orientation_covariance[0] = -1.0  # heading은 dual GNSS(f9p - f9r) 차분으로 제공
+        msg.orientation_covariance[0] = -1.0  # heading은 dual GNSS(전방 f9r - 후륜축 f9p) 차분으로 제공
 
         angular_velocity_cov = [0.0] * 9
         angular_velocity_cov[0] = 1e9
