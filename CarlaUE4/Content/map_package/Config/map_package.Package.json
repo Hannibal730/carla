@@ -2,8 +2,8 @@
     "props": [],
     "maps": [
         {
-            "name": "Mando5",
-            "path": "/Game/map_package/Maps/Mando5",
+            "name": "Mando6",
+            "path": "/Game/map_package/Maps/Mando6",
             "use_carla_materials": true
         }
     ]
