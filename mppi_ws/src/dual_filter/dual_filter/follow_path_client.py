@@ -53,6 +53,8 @@ class ModeManager(Node):
         self._robot_x: float | None = None
         self._robot_y: float | None = None
         self._follow_goal_handle = None   # 현재 FollowPath goal handle
+        self._goal_seq = 0                # 주차 목표 시퀀스 (새 목표마다 증가)
+                                          #   → 취소된 옛 목표의 늦은 콜백을 걸러냄
 
         # ── Action clients ─────────────────────────────────────────────────
         self._follow_client = ActionClient(self, FollowPath, 'follow_path')
@@ -101,16 +103,24 @@ class ModeManager(Node):
             self._try_start_csv()
 
     def _goal_pose_cb(self, msg: PoseStamped) -> None:
-        """RViz 2D Goal Pose 클릭 → 주차 모드 전환."""
+        """RViz 2D Goal Pose 클릭 → 주차 모드 전환.
+
+        새 목표가 올 때마다 시퀀스를 증가시켜, 진행 중이던 목표(및 그 취소로
+        인해 뒤늦게 도착하는 콜백)를 무효화하고 곧바로 새 목표로 재타겟한다.
+        """
+        self._goal_seq += 1
+        seq = self._goal_seq
+
         if self._mode == Mode.PARKING:
             self.get_logger().warn(
-                '이미 주차 모드입니다. 현재 주차 취소 후 새 목표로 재시작합니다.')
+                f'주차 진행 중 새 목표 수신 — 기존 목표 취소 후 새 목표로 재타겟합니다. '
+                f'(seq={seq})')
         self.get_logger().info(
             f'주차 목표 수신: '
             f'x={msg.pose.position.x:.2f}, y={msg.pose.position.y:.2f}, '
-            f'frame={msg.header.frame_id}'
+            f'frame={msg.header.frame_id} (seq={seq})'
         )
-        self._cancel_follow_then(lambda: self._start_parking(msg))
+        self._cancel_follow_then(lambda: self._start_parking(msg, seq))
 
     # ── CSV 추종 ───────────────────────────────────────────────────────────
 
@@ -147,7 +157,17 @@ class ModeManager(Node):
 
     # ── 주차 ───────────────────────────────────────────────────────────────
 
-    def _start_parking(self, goal_pose: PoseStamped) -> None:
+    def _is_stale(self, seq: int) -> bool:
+        """더 새로운 목표가 도착했으면 True — 이 콜백 체인은 폐기한다."""
+        if seq != self._goal_seq:
+            self.get_logger().info(
+                f'[PARK] 옛 목표(seq={seq}) 콜백 무시 — 최신 seq={self._goal_seq}')
+            return True
+        return False
+
+    def _start_parking(self, goal_pose: PoseStamped, seq: int) -> None:
+        if self._is_stale(seq):
+            return
         self._set_mode(Mode.PARKING)
         self.get_logger().info('[PARK] planner_server 에 경로 요청 중 ...')
 
@@ -165,18 +185,24 @@ class ModeManager(Node):
         goal.use_start = False          # 현재 로봇 위치를 시작점으로 사용
 
         future = self._planner_client.send_goal_async(goal)
-        future.add_done_callback(self._on_plan_goal_response)
+        future.add_done_callback(
+            lambda f: self._on_plan_goal_response(f, seq))
 
-    def _on_plan_goal_response(self, future) -> None:
+    def _on_plan_goal_response(self, future, seq: int) -> None:
+        if self._is_stale(seq):
+            return
         handle = future.result()
         if not handle.accepted:
             self.get_logger().error('[PARK] planner_server 가 goal 을 거부했습니다.')
             self._resume_csv()
             return
         self.get_logger().info('[PARK] planner_server goal 수락. 경로 계산 중 ...')
-        handle.get_result_async().add_done_callback(self._on_plan_result)
+        handle.get_result_async().add_done_callback(
+            lambda f: self._on_plan_result(f, seq))
 
-    def _on_plan_result(self, future) -> None:
+    def _on_plan_result(self, future, seq: int) -> None:
+        if self._is_stale(seq):
+            return
         result = future.result().result
         path: Path = result.path
 
@@ -194,12 +220,16 @@ class ModeManager(Node):
         self._send_follow_path(
             path,
             on_accepted=lambda: self.get_logger().info('[PARK] 주차 goal 수락됨.'),
-            on_result=self._on_parking_result,
+            on_result=lambda f: self._on_parking_result(f, seq),
             controller_id='ParkingPath',          # 주차 전용 MPPI 플러그인 (전진·후진 혼합)
             goal_checker_id='parking_goal_checker',  # 정밀 정렬용 엄격한 tolerance
         )
 
-    def _on_parking_result(self, future) -> None:
+    def _on_parking_result(self, future, seq: int) -> None:
+        # 취소된 옛 목표의 result(CANCELED)가 늦게 도착해 새 목표를 덮어쓰지 않도록
+        # 최신 목표의 결과일 때만 CSV 로 복귀한다.
+        if self._is_stale(seq):
+            return
         result = future.result()
         status = result.status
         error_code = getattr(result.result, 'error_code', 'N/A')

@@ -2086,16 +2086,6 @@ python PythonAPI/util/config.py --map Mando6 \
      --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
 ```
 
-```bash
-# Mando5 (넓은 맵, 스폰 좌표 예시 — 실제 위치는 15.7 E-2로 산출)
-cd ~/carla
-source .venv/bin/activate
-python PythonAPI/util/config.py --map Mando5 \
-  && python PythonAPI/examples/manual_control.py --rolename car \
-     --filter vehicle.micro.microlino --generation 2 --sync \
-     --spawn-x -59.6 --spawn-y -22.2 --spawn-z 0.3 --spawn-yaw -89.5
-```
-
 #### 터미널 3 — 센서 브리지 (`/clock` 포함)
 
 ```bash
