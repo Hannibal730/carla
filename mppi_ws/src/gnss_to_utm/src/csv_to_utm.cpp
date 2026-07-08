@@ -11,11 +11,11 @@
 #include <vector>
 
 /*
- * CSV UTM coordinates → /csv_path (nav_msgs/Path, frame: utm)
+ * CSV UTM coordinates → /csv_path (nav_msgs/Path, frame: map)
  *
- * utm_to_odometry 와 동일하게 /utm_datum 수신 시점의 UTM 좌표를 datum 으로
+ * gnss_to_odom 과 동일하게 /utm_datum 수신 시점의 UTM 좌표를 datum 으로
  * 래치한다. 두 노드가 같은 datum 을 공유하므로 /csv_path 는 별도 TF 없이
- * 바로 utm 프레임 경로로 사용할 수 있다.
+ * 바로 'map' 프레임 경로로 사용할 수 있다.
  *
  * 변환 규칙 (gnss_to_odom 와 동일, ROS ENU 기준):
  *   local_x = (utm_x - datum_x)   // east  = +X
@@ -96,7 +96,7 @@ private:
 
     void publish_path()
     {
-        // UTM 절대 좌표 → utm 프레임 상대 좌표 (CARLA +Y=right 보정: north=-Y, east=+X)
+        // UTM 절대 좌표 → 'map' 프레임 상대 좌표 (CARLA +Y=right 보정: north=-Y, east=+X)
         // gnss_to_odom.py 와 동일한 변환 적용:  local_y = -(utm_y - datum_y)
         // 연속된 중복 waypoint 제거: 이전 점과 0.1 m 미만 간격이면 건너뜀
         static constexpr double MIN_STEP = 0.1;  // m
@@ -115,7 +115,7 @@ private:
 
         nav_msgs::msg::Path path;
         path.header.stamp = this->now();
-        path.header.frame_id = "utm";
+        path.header.frame_id = "map";
 
         const size_t n = local_pts.size();
         for (size_t i = 0; i < n; ++i) {
@@ -145,7 +145,7 @@ private:
 
         path_pub_->publish(path);
         RCLCPP_INFO(this->get_logger(),
-            "/csv_path published in utm frame: %zu poses", path.poses.size());
+            "/csv_path published in map frame: %zu poses", path.poses.size());
     }
 };
 

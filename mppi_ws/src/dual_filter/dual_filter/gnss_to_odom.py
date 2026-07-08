@@ -1,6 +1,6 @@
 """
 /f9p_utm (PointStamped)  +  /azimuth_angle (Float64, degrees, geo N=0 CW+)
-→  /odometry/gnss (Odometry, CARLA-aligned utm frame)
+→  /odometry/gnss (Odometry, CARLA-aligned 'map' frame)
 
 Conversion:
   yaw_enu = π/2 − bearing_deg × π/180
@@ -12,7 +12,8 @@ f9p GNSS 센서는 stack.json 에서 spawn_point x=0,y=0 으로 설정돼 있어
 후륜축(= base_link 원점)에 정확히 위치한다. 별도 오프셋 보정 불필요.
 (f9r은 전방 x=1.4 — heading 벡터 끝점으로만 사용)
 
-datum: 최초 f9p 수신 시의 UTM 좌표를 래치. 이 점이 utm 프레임 (0,0)이 된다.
+datum: 최초 f9p 수신 시의 UTM 좌표를 래치. 이 점이 'map' 프레임 (0,0)이 된다.
+       (/utm_datum 은 절대 UTM 좌표를 담으므로 frame_id 는 'utm' 유지)
 """
 import math
 
@@ -84,7 +85,8 @@ class GnssToOdom(Node):
 
         odom = Odometry()
         odom.header.stamp = msg.header.stamp
-        odom.header.frame_id = 'utm'
+        # datum-상대 위치 → TF 전역 프레임 'map' (global_ekf world_frame 와 일치해야 함)
+        odom.header.frame_id = 'map'
         odom.child_frame_id = 'base_link'
 
         odom.pose.pose.position.x =  (msg.point.x - self._datum_x)

@@ -47,15 +47,15 @@ GNSS가 순간 1m 튐
 | 필터 | 담당 | GNSS | 발행 TF | 소비자 |
 | :--- | :--- | :--- | :--- | :--- |
 | **로컬 EKF** | **부드러움** — 안 튀는 연속적 오도메트리 | ❌ 안 씀 | `odom → base_link` | MPPI 로컬 제어 |
-| **글로벌 EKF** | **절대 정확도** — 지구상 실제 위치 | ✅ 씀 | `utm → odom` | 전역 경로 추종 |
+| **글로벌 EKF** | **절대 정확도** — 지구상 실제 위치 | ✅ 씀 | `map → odom` | 전역 경로 추종 |
 
-**핵심 트릭 — GNSS의 Jump를 제어기로부터 격리한다.** 글로벌 EKF는 GNSS 보정을 차량 위치가 아니라 **`utm → odom` 오프셋(지도와 출발점 사이의 어긋남)에만** 조용히 반영한다. 그래서 GNSS가 튀어도 제어기가 보는 `odom → base_link`는 전혀 변하지 않는다.
+**핵심 트릭 — GNSS의 Jump를 제어기로부터 격리한다.** 글로벌 EKF는 GNSS 보정을 차량 위치가 아니라 **`map → odom` 오프셋(지도와 출발점 사이의 어긋남)에만** 조용히 반영한다. 그래서 GNSS가 튀어도 제어기가 보는 `odom → base_link`는 전혀 변하지 않는다.
 
 ```
-utm ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
+map ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
       GNSS로 여기만 보정          절대 안 튐 (MPPI가 봄)
 
-GNSS 튐 → utm→odom 만 조정 → odom→base_link(제어용)는 그대로
+GNSS 튐 → map→odom 만 조정 → odom→base_link(제어용)는 그대로
        → MPPI는 아무것도 감지 못 함 → 안정적 제어
 ```
 
@@ -81,10 +81,10 @@ GNSS 튐 → utm→odom 만 조정 → odom→base_link(제어용)는 그대로
 시스템은 다음의 계층적 TF 트리를 반드시 유지해야 한다.
 
 ```
-utm ──[global_ekf]──> odom ──[local_ekf]──> base_link
+map ──[global_ekf]──> odom ──[local_ekf]──> base_link
 ```
 
-본 시스템의 TF 트리는 dual_filter 스택이 담당한다. 경로 파일 처리는 `csv_to_utm` 노드가 `/utm_datum`을 공유받아 `/csv_path`를 `utm` 프레임으로 발행한다.
+본 시스템의 TF 트리는 dual_filter 스택이 담당한다. 경로 파일 처리는 `csv_to_utm` 노드가 `/utm_datum`을 공유받아 `/csv_path`를 `map` 프레임으로 발행한다.
 
 ---
 
@@ -127,56 +127,56 @@ utm ──[global_ekf]──> odom ──[local_ekf]──> base_link
 
 ---
 
-### 2.3 `utm` — 전역 절대 기준점
+### 2.3 `map` — 전역 절대 기준점
 
-**원점:** `gnss_to_odom.py`에서 설정한 `datum_easting / datum_northing` (UTM 좌표). 이 점이 ROS의 `(0, 0)` utm 원점이 된다.
+**원점:** `gnss_to_odom.py`에서 설정한 `datum_easting / datum_northing` (UTM 좌표). 이 점이 ROS의 `(0, 0)` map 원점이 된다.
 
 ```
 현재 설정 (gnss_to_odom.py):
   datum_easting  = 첫 번째 f9p GNSS 수신 시의 UTM easting
   datum_northing = 첫 번째 f9p GNSS 수신 시의 UTM northing
 
-→ datum이 실행마다 달라지므로 utm 원점도 실행마다 달라진다.
-  datum을 고정 UTM 값으로 하드코딩하면 utm 원점도 항상 일정해진다.
+→ datum이 실행마다 달라지므로 map 원점도 실행마다 달라진다.
+  datum을 고정 UTM 값으로 하드코딩하면 map 원점도 항상 일정해진다.
 ```
 
-`utm` 프레임을 이해하는 핵심은 **`utm`이 `odom`을 보정하는 프레임**이라는 것이다.
+`map` 프레임을 이해하는 핵심은 **`map`이 `odom`을 보정하는 프레임**이라는 것이다.
 
 ```
 [이해하기 어려운 이유]
-직관적으로는: utm → base_link 하나면 충분하지 않나?
+직관적으로는: map → base_link 하나면 충분하지 않나?
 
 [실제 이유]
 odom → base_link 는 연속적(제어기용)
-utm → odom      는 가끔 점프해서 절대 위치 보정
+map → odom      는 가끔 점프해서 절대 위치 보정
 
 둘을 분리함으로써, GNSS 보정이 제어기에 직접 전달되는 것을 차단한다.
 ```
 
-**`utm → odom` TF의 물리적 의미:**
+**`map → odom` TF의 물리적 의미:**
 
 ```
-initial:  utm → odom = 항등변환
-          (utm 원점과 odom 원점이 같은 위치)
+initial:  map → odom = 항등변환
+          (map 원점과 odom 원점이 같은 위치)
 
 500m 주행 후 odom이 2m 동쪽으로 드리프트했다면:
   global_ekf가 GNSS로 실제 위치를 파악
-  → utm → odom 오프셋을 2m 서쪽으로 조정
+  → map → odom 오프셋을 2m 서쪽으로 조정
   → odom → base_link 는 그대로 (제어기에 영향 없음)
-  → utm → odom → base_link 합산으로 실제 절대 위치 계산
+  → map → odom → base_link 합산으로 실제 절대 위치 계산
 ```
 
-- **발행 주체:** `global_ekf` (`world_frame: utm`, `publish_tf: true`)
+- **발행 주체:** `global_ekf` (`world_frame: map`, `publish_tf: true`)
 - **계산 방법:** wheel `vx` + IMU `wz` + GNSS UTM `(x,y)` + azimuth yaw의 EKF 융합
 - **장점:** 드리프트가 보정된 절대 위치
-- **단점:** GNSS 업데이트 시 `utm → odom` 오프셋이 불연속적으로 변할 수 있다(Jump). 단, 이 Jump는 `odom → base_link`에는 전달되지 않으므로 제어기는 영향을 받지 않는다.
+- **단점:** GNSS 업데이트 시 `map → odom` 오프셋이 불연속적으로 변할 수 있다(Jump). 단, 이 Jump는 `odom → base_link`에는 전달되지 않으므로 제어기는 영향을 받지 않는다.
 - **사용처:** 전역 경로 추종, MPPI의 global plan frame
 
 ---
 
-### 2.4 `csv_to_utm` — 경로 파일 → utm 프레임 Path 발행
+### 2.4 `csv_to_utm` — 경로 파일 → map 프레임 Path 발행
 
-`csv_to_utm` 노드(`gnss_to_utm` 패키지)는 CSV 파일의 UTM 절대 좌표를 `utm` 프레임의 상대 좌표로 변환하여 `/csv_path`(`nav_msgs/Path`)로 발행한다. 별도 TF 프레임은 발행하지 않는다.
+`csv_to_utm` 노드(`gnss_to_utm` 패키지)는 CSV 파일의 UTM 절대 좌표를 `map` 프레임의 상대 좌표로 변환하여 `/csv_path`(`nav_msgs/Path`)로 발행한다. 별도 TF 프레임은 발행하지 않는다.
 
 ```
 변환 규칙 (gnss_to_odom.py와 동일한 datum 사용):
@@ -185,12 +185,12 @@ initial:  utm → odom = 항등변환
 
 datum 공급 경로:
   gnss_to_odom.py → /utm_datum (transient_local) → csv_to_utm
-  → 두 노드가 동일한 datum을 공유하므로 /csv_path는 바로 utm 프레임 경로로 사용 가능
+  → 두 노드가 동일한 datum을 공유하므로 /csv_path는 바로 map 프레임 경로로 사용 가능
 ```
 
 - **발행 주체:** `csv_to_utm` 노드 (`gnss_to_utm` 패키지)
 - **구독:** `/utm_datum` (`geometry_msgs/PointStamped`, transient_local) — `gnss_to_odom`이 래치한 datum
-- **발행:** `/csv_path` (`nav_msgs/Path`, `frame_id: utm`) — 웨이포인트 pose 목록 (yaw 포함)
+- **발행:** `/csv_path` (`nav_msgs/Path`, `frame_id: map`) — 웨이포인트 pose 목록 (yaw 포함)
 - **EKF와의 관계:** TF 트리에 직접 참여하지 않지만 `/utm_datum`을 통해 dual_filter 스택과 datum을 공유한다.
 - **파라미터:** `csv_file_path` — 절대 경로로 CSV 파일 지정 (`config/csv_to_utm.yaml`)
 - **사용처:** `dual_filter` 스택과 함께 실행하여 `/csv_path`를 경로 추종 입력으로 활용
@@ -205,9 +205,9 @@ datum 공급 경로:
   지구상의 절대 위치 (UTM datum 기준)
        │
        ▼
-     utm ──────────────────────────────── 전역 고정 좌표계
+     map ──────────────────────────────── 전역 고정 좌표계
        │                                  원점: gnss_to_odom.py의 datum
-       │ utm → odom TF                    발행: global_ekf
+       │ map → odom TF                    발행: global_ekf
        │ (GNSS로 드리프트 보정)
        ▼
      odom ─────────────────────────────── 출발점 고정 좌표계
@@ -221,15 +221,15 @@ datum 공급 경로:
 
 [경로 파일 — csv_to_utm (TF 트리 외부)]
 
-  gnss_to_odom → /utm_datum → csv_to_utm → /csv_path (utm frame)
-  (datum 공유로 /csv_path는 별도 TF 없이 utm 프레임 경로로 직접 사용 가능)
+  gnss_to_odom → /utm_datum → csv_to_utm → /csv_path (map frame)
+  (datum 공유로 /csv_path는 별도 TF 없이 map 프레임 경로로 직접 사용 가능)
 ```
 
 | 프레임 | 원점 | 이동 여부 | 연속성 | 절대 위치 | 발행 주체 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `base_link` | 후륜축 중심 | 차량과 함께 이동 | 연속 | 없음 | local_ekf |
 | `odom` | 시스템 시작 위치 | 고정 | 연속 (드리프트 있음) | 없음 | local_ekf |
-| `utm` | datum UTM 좌표 | 고정 | 가끔 보정(Jump 가능) | 있음 | global_ekf |
+| `map` | datum UTM 좌표 | 고정 | 가끔 보정(Jump 가능) | 있음 | global_ekf |
 
 ---
 
@@ -453,7 +453,7 @@ GNSS 위치가 순간적으로 1m 튐
 → 조향/가감속 명령이 튀거나 발산
 ```
 
-따라서 로컬 EKF는 GNSS를 쓰지 않고 wheel+IMU만 적분한다. GNSS로 누적 드리프트를 보정하는 일은 global EKF가 `utm → odom` TF를 조정하는 방식으로 담당한다.
+따라서 로컬 EKF는 GNSS를 쓰지 않고 wheel+IMU만 적분한다. GNSS로 누적 드리프트를 보정하는 일은 global EKF가 `map → odom` TF를 조정하는 방식으로 담당한다.
 
 #### 왜 `odom → base_link` TF를 발행하는가
 
@@ -464,7 +464,7 @@ GNSS 위치가 순간적으로 1m 튐
 ```
 
 *   이 TF는 GNSS 보정이 없으므로 **연속적이고 부드러움** → 제어기가 안정적으로 동작.
-*   단점: GNSS 없이 적분만 하므로 장시간 운행 시 오차 누적(드리프트) → **글로벌 필터가 `utm → odom`으로 보정.**
+*   단점: GNSS 없이 적분만 하므로 장시간 운행 시 오차 누적(드리프트) → **글로벌 필터가 `map → odom`으로 보정.**
 
 #### 로컬 EKF에서 특히 조심해야 하는 오류
 
@@ -479,7 +479,7 @@ GNSS 위치가 순간적으로 1m 튐
 
 *   **목적:** GNSS 절대 위치로 로컬 필터의 장기 드리프트를 보정하고, 맵 상의 절대 위치를 파악.
 *   **입력:** `/wheel_encoder/data`, `/imu/data`, `/odometry/gnss` (Node 1 출력 — UTM 위치 + azimuth yaw)
-*   **출력:** `/odometry/global` 토픽, `utm` $\rightarrow$ `odom` TF 발행
+*   **출력:** `/odometry/global` 토픽, `map` $\rightarrow$ `odom` TF 발행
 
 #### 글로벌 EKF — 각 입력이 필요한 이유 (예측/보정 단계)
 
@@ -521,7 +521,7 @@ odom1_config: [true,  true,  false,
   robot_localization이 quaternion에서 yaw 추출
 ```
 
-global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해서다. `/wheel_encoder/data(vx, vy=0)`와 `/imu/data(wz)`만 있으면 global EKF도 local EKF처럼 상대 적분만 수행한다. 위치 x, y를 GNSS로 보정하더라도 yaw가 틀어져 있으면 다음 예측 단계에서 진행 방향이 잘못되어 위치 보정과 예측이 서로 싸우게 된다. 특히 코너 구간에서는 GNSS 위치 업데이트마다 경로가 흔들리거나, `utm→odom` 보정이 불안정해질 수 있다. dual GNSS yaw를 함께 넣으면 위치와 방향이 같은 절대 좌표계에서 동시에 보정된다.
+global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해서다. `/wheel_encoder/data(vx, vy=0)`와 `/imu/data(wz)`만 있으면 global EKF도 local EKF처럼 상대 적분만 수행한다. 위치 x, y를 GNSS로 보정하더라도 yaw가 틀어져 있으면 다음 예측 단계에서 진행 방향이 잘못되어 위치 보정과 예측이 서로 싸우게 된다. 특히 코너 구간에서는 GNSS 위치 업데이트마다 경로가 흔들리거나, `map→odom` 보정이 불안정해질 수 있다. dual GNSS yaw를 함께 넣으면 위치와 방향이 같은 절대 좌표계에서 동시에 보정된다.
 
 #### `/azimuth_angle`을 `pose.pose.orientation` yaw 대신 직접 쓸 수 있는가
 
@@ -548,7 +548,7 @@ global EKF에서 yaw를 쓰는 이유는 절대 heading을 보정하기 위해�
 
 즉 `/azimuth_angle`은 좋은 원천 데이터이고, global EKF에는 그것을 ROS 좌표계 quaternion yaw로 변환한 `/odometry/gnss.pose.pose.orientation`을 넣는 것이 정답에 가깝다.
 
-#### 왜 `odom → base_link` 대신 `utm → odom` TF를 발행하는가
+#### 왜 `odom → base_link` 대신 `map → odom` TF를 발행하는가
 
 이것이 듀얼 필터 아키텍처의 핵심이다. 두 가지 이유가 있다.
 
@@ -566,26 +566,26 @@ GNSS 노이즈로 위치가 1m 튐
 → 차량 발산
 ```
 
-`utm → odom` 오프셋을 조정하면:
+`map → odom` 오프셋을 조정하면:
 
 ```text
 GNSS 보정 발생
-→ utm → odom 오프셋만 조용히 변경됨
+→ map → odom 오프셋만 조용히 변경됨
 → odom → base_link는 전혀 변하지 않음 (로컬 EKF가 계속 부드럽게 발행 중)
 → MPPI는 아무것도 감지하지 못함 → 안정적 제어
-→ 전역 경로 추종 노드만 utm → base_link를 새로 계산하여 장거리 오차 보정
+→ 전역 경로 추종 노드만 map → base_link를 새로 계산하여 장거리 오차 보정
 ```
 
 **전체 TF 관계 요약:**
 
 ```text
-utm ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
+map ──[글로벌 EKF]──> odom ──[로컬 EKF]──> base_link
      (절대 위치 오프셋)       (부드러운 이동)
 
-utm → base_link = (utm→odom) + (odom→base_link)
+map → base_link = (map→odom) + (odom→base_link)
                    ^글로벌EKF    ^로컬EKF
 
-전역 경로 추종: utm → base_link 사용 (절대 위치 기반)
+전역 경로 추종: map → base_link 사용 (절대 위치 기반)
 로컬 제어기:   odom → base_link 사용 (부드러운 이동 기반)
 ```
 
@@ -602,7 +602,7 @@ local_ekf:
     two_d_mode: true               # 평면 주행(2D) 강제 적용
     publish_tf: true               # odom -> base_link TF 발행 활성화
     
-    map_frame: utm
+    map_frame: map
     odom_frame: odom
     base_link_frame: base_link
     world_frame: odom              # 기준 프레임을 odom으로 설정
@@ -638,12 +638,12 @@ global_ekf:
     use_sim_time: true              # /clock(CARLA simulation time) 사용
     frequency: 50.0
     two_d_mode: true
-    publish_tf: true               # utm -> odom TF 발행 활성화
+    publish_tf: true               # map -> odom TF 발행 활성화
     
-    map_frame: utm
+    map_frame: map
     odom_frame: odom
     base_link_frame: base_link
-    world_frame: utm               # 기준 프레임을 utm으로 설정
+    world_frame: map               # 기준 프레임을 map으로 설정
 
     odom0: /wheel_encoder/data
     odom0_config: [false, false, false,
@@ -699,7 +699,7 @@ mppi_ws/
 │   │   │   ├── f9r_to_utm.cpp           ← NavSatFix → /f9r_utm (PointStamped)
 │   │   │   ├── f9p_to_utm.cpp           ← NavSatFix → /f9p_utm (PointStamped)
 │   │   │   ├── azimuth_angle_calculator.cpp ← dual GNSS → /azimuth_angle (Float64)
-│   │   │   ├── csv_to_utm.cpp           ← /utm_datum → /csv_path (Path, utm frame)
+│   │   │   ├── csv_to_utm.cpp           ← /utm_datum → /csv_path (Path, map frame)
 │   │   │   └── f9p_to_csv.py            ← 오프라인 도구: rosbag → UTM CSV 변환
 │   │   ├── config/csv_to_utm.yaml       ← csv_file_path 파라미터
 │   │   └── launch/csv_to_utm.launch.py
@@ -733,7 +733,7 @@ mppi_ws/
   * `/azimuth_angle` (`std_msgs/Float64`) — geographic bearing, **도°**, N=0 CW+
 * **발행:**
   * `/odometry/gnss` (`nav_msgs/Odometry`) — 글로벌 EKF 입력
-    * `header.frame_id = "utm"`, `child_frame_id = "base_link"`
+    * `header.frame_id = "map"`, `child_frame_id = "base_link"`
     * `pose.pose.position.x` = `easting - datum_easting`
     * `pose.pose.position.y` = `-(northing - datum_northing)` — CARLA `+Y=right`를 ROS `+Y=left`로 미러링
     * `pose.pose.orientation` = azimuth → ENU yaw 변환 → yaw 부호 반전 후 쿼터니언
@@ -861,8 +861,8 @@ f9r/f9p GNSS는 `ros2_sensor/stack.json`의 각 센서 `attributes.sensor_tick`�
 | 출력 Path | 입력 Odometry | Path frame | 의미 |
 | :--- | :--- | :--- | :--- |
 | `/path/local_ekf` | `/odometry/local` | `odom` | GNSS 없이 wheel+IMU만 적분한 부드러운 odom-frame dead-reckoning 궤적 |
-| `/path/gnss` | `/odometry/gnss` | `utm` | EKF를 거치지 않은 GNSS 위치와 dual GNSS yaw 기반 절대 궤적 |
-| `/path/global_ekf` | `/odometry/global` | `utm` | wheel+IMU+GNSS를 융합한 global EKF 추정 궤적 |
+| `/path/gnss` | `/odometry/gnss` | `map` | EKF를 거치지 않은 GNSS 위치와 dual GNSS yaw 기반 절대 궤적 |
+| `/path/global_ekf` | `/odometry/global` | `map` | wheel+IMU+GNSS를 융합한 global EKF 추정 궤적 |
 
 세 Path의 이름은 의미를 분리하기 위해 명확하게 둔다.
 
@@ -872,7 +872,7 @@ f9r/f9p GNSS는 `ros2_sensor/stack.json`의 각 센서 `attributes.sensor_tick`�
 | GNSS Path | `/path/gnss` | dual GNSS 기반 절대 궤적 |
 | Global EKF Path | `/path/global_ekf` | global EKF 융합 결과 |
 
-`/path/local_ekf`는 제어 안정성 확인용이고, `/path/gnss`는 GNSS 변환 결과가 CARLA 주행 궤적과 맞는지 확인하는 전역 기준 궤적이다. `/path/global_ekf`는 global EKF가 GNSS 원천 궤적을 얼마나 부드럽게 따라가며 `utm→odom` 보정을 만드는지 확인하는 용도이다. RViz는 `use_sim_time:=true`로 실행해야 Path와 TF가 같은 시간축에서 표시된다.
+`/path/local_ekf`는 제어 안정성 확인용이고, `/path/gnss`는 GNSS 변환 결과가 CARLA 주행 궤적과 맞는지 확인하는 전역 기준 궤적이다. `/path/global_ekf`는 global EKF가 GNSS 원천 궤적을 얼마나 부드럽게 따라가며 `map→odom` 보정을 만드는지 확인하는 용도이다. RViz는 `use_sim_time:=true`로 실행해야 Path와 TF가 같은 시간축에서 표시된다.
 
 ---
 
@@ -979,7 +979,7 @@ controller_server
 
 | 요구사항 | 코드상 형태 | 실제 공급 주체 | 현재 파이프라인 충족 여부 | 권장 설정/조치 |
 | :--- | :--- | :--- | :--- | :--- |
-| 현재 차량 pose | `geometry_msgs/PoseStamped robot_pose` | `controller_server`가 TF/costmap으로 계산 | 충족 가능. `utm→odom→base_link` TF가 있음 | Nav2 frame을 `global_frame: utm`, `robot_base_frame: base_link` 기준으로 맞춤 |
+| 현재 차량 pose | `geometry_msgs/PoseStamped robot_pose` | `controller_server`가 TF/costmap으로 계산 | 충족 가능. `map→odom→base_link` TF가 있음 | Nav2 frame을 `global_frame: map`, `robot_base_frame: base_link` 기준으로 맞춤 |
 | 현재 차량 속도 | `geometry_msgs/Twist robot_speed` | `odom_topic`의 `nav_msgs/Odometry.twist.twist` | 충족. `/odometry/local`이 가장 적합 | `controller_server.odom_topic: /odometry/local` |
 | 로컬 제어용 path | `nav_msgs/Path transformed_global_plan` | `FollowPath` action의 path를 path handler가 변환 | dual filter만으로는 미충족 | Nav2 planner 또는 외부 global path publisher가 FollowPath action에 path 제공 필요 |
 | 최종 goal | `geometry_msgs/PoseStamped global_goal` | FollowPath action / path handler | dual filter만으로는 미충족 | 목표 pose 또는 path 마지막 pose 제공 필요 |
@@ -1064,20 +1064,20 @@ controller_server:
 MPPI의 `robot_pose`는 odometry topic의 pose가 아니라 controller server/costmap/TF 경로에서 들어온다. 따라서 다음 TF가 반드시 살아 있어야 한다.
 
 ```text
-utm ──> odom ──> base_link
+map ──> odom ──> base_link
 ```
 
 | TF | 발행 주체 | MPPI 관점에서 필요한 이유 | 현재 충족 여부 |
 | :--- | :--- | :--- | :--- |
 | `odom → base_link` | `local_ekf` | local frame에서 차량 pose를 연속적으로 제공 | 충족 |
-| `utm → odom` | `global_ekf` | global path/utm frame과 local odom frame 연결 | 충족 |
-| `utm → base_link` | TF 합성 결과 | global plan을 local control frame으로 변환할 때 필요 | 위 두 TF가 있으면 충족 |
+| `map → odom` | `global_ekf` | global path/map frame과 local odom frame 연결 | 충족 |
+| `map → base_link` | TF 합성 결과 | global plan을 local control frame으로 변환할 때 필요 | 위 두 TF가 있으면 충족 |
 
 Nav2 costmap frame 설정은 보통 다음 구성이 자연스럽다.
 
 | Nav2 frame parameter | 권장값 | 이유 |
 | :--- | :--- | :--- |
-| `global_frame` | `utm` 또는 local costmap에서는 `odom` | global planner/path와 local controller 구성에 따라 선택 |
+| `global_frame` | `map` 또는 local costmap에서는 `odom` | global planner/path와 local controller 구성에 따라 선택 |
 | `robot_base_frame` | `base_link` | CARLA 차량 기준 프레임 |
 | `transform_tolerance` | `0.1` 이상에서 시작 | sim time/TF 지연을 흡수 |
 
@@ -1090,7 +1090,7 @@ MPPI는 path를 직접 만들지 않는다. `controller_server`가 FollowPath ac
 | 요구사항 | 필요 메시지/객체 | 현재 dual filter가 제공? | 추가 필요 |
 | :--- | :--- | :--- | :--- |
 | 추종할 global path | `nav_msgs/Path` | 아니오. `/path/gnss`, `/path/global_ekf`는 시각화용 주행 궤적임 | planner 또는 별도 path publisher |
-| path frame | 보통 `utm` | 가능 | path header frame과 TF tree 일치 필요 |
+| path frame | 보통 `map` | 가능 | path header frame과 TF tree 일치 필요 |
 | 최종 goal | path 마지막 pose 또는 action goal | 아니오 | FollowPath action goal 제공 |
 | transformed local plan | controller server 내부 생성 | Nav2가 생성 | TF와 path가 정상이어야 함 |
 
@@ -1165,8 +1165,8 @@ MPPI output
 | :--- | :--- | :--- | :--- | :--- |
 | 현재 속도 odometry | 필수 | `/odometry/local` | 충족 | `controller_server.odom_topic`에 지정 |
 | 연속 TF | 필수 | `odom→base_link` | 충족 | local EKF 유지 |
-| 전역 보정 TF | 필수에 가까움 | `utm→odom` | 충족 | global EKF 유지 |
-| 현재 pose | 필수 | TF 합성 `utm/odom→base_link` | 충족 가능 | Nav2 frame 설정 필요 |
+| 전역 보정 TF | 필수에 가까움 | `map→odom` | 충족 | global EKF 유지 |
+| 현재 pose | 필수 | TF 합성 `map/odom→base_link` | 충족 가능 | Nav2 frame 설정 필요 |
 | global path | 필수 | 없음. `/path/*`는 시각화용 | 미충족 | planner 또는 FollowPath용 path 생성 |
 | goal pose | 필수 | 없음 | 미충족 | Nav2 action goal 제공 |
 | local costmap | 장애물 회피 시 필수 | LiDAR topic은 있음 | 부분 충족 | Nav2 costmap 설정 필요 |
@@ -1179,7 +1179,7 @@ MPPI output
 
 ```text
 1. controller_server.odom_topic = /odometry/local
-2. Nav2 TF frame: utm/odom/base_link 일치
+2. Nav2 TF frame: map/odom/base_link 일치
 3. FollowPath에 넣을 계획 경로 생성
 4. local costmap 구성
 5. motion_model = ackermann 및 제약 튜닝
@@ -1397,9 +1397,9 @@ ros2 run serial_bridge serial_bridge
 | `/carla/car/f9r/fix`, `/f9p/fix` 발행 | ✅ | `ros2_sensor.py` |
 | `gnss_to_utm` 소스 구현 | ✅ | `f9r_to_utm`, `f9p_to_utm`, `azimuth_angle_calculator`, `csv_to_utm` |
 | `dual_filter` 소스 구현 | ✅ | `gnss_to_odom.py`, `path_visualizer.py`, CARLA Y축 부호 반전 |
-| `ekf_params.yaml` 설정 | ✅ | local: `world_frame=odom`, global: `world_frame=utm`, covariance 완성 |
+| `ekf_params.yaml` 설정 | ✅ | local: `world_frame=odom`, global: `world_frame=map`, covariance 완성 |
 | `dual_filter.launch.py` 리매핑 | ✅ | CARLA 토픽명 → EKF 내부 토픽명 전체 설정 |
-| TF tree 설계 | ✅ | `utm → odom → base_link` (REP-105 준수) |
+| TF tree 설계 | ✅ | `map → odom → base_link` (REP-105 준수) |
 | `robot_localization` 설치 | ✅ | `ros-humble-robot-localization 3.5.4` |
 
 
@@ -2209,7 +2209,7 @@ ros2 topic echo --once /carla/car/imu/data --field header.stamp
 ros2 topic echo --once /odometry/local --field header.stamp
 ros2 topic echo --once /odometry/global --field header.stamp
 
-# TF 트리 확인 (utm → odom → base_link 구조인지)
+# TF 트리 확인 (map → odom → base_link 구조인지)
 ros2 run tf2_tools view_frames
 
 # wheel / IMU 입력 확인
@@ -2218,7 +2218,7 @@ ros2 topic echo --once /carla/car/imu/data --field angular_velocity
 
 # 로컬 EKF 출력 (MPPI 제어 입력용 — GNSS jump 없이 부드러워야 함)
 ros2 topic echo /odometry/local
-# 글로벌 EKF 출력 (utm → odom 보정용)
+# 글로벌 EKF 출력 (map → odom 보정용)
 ros2 topic echo /odometry/global
 # GNSS 브리지 출력
 ros2 topic echo /odometry/gnss
@@ -2306,7 +2306,7 @@ CARLA Simulator
                          global_ekf ◄─ wheel(vx) + imu(wz) + gnss    │
                               │                       │               │
                               ▼                       ▼               ▼
-                    /odometry/local           utm → odom TF     /csv_path
+                    /odometry/local           map → odom TF     /csv_path
                     odom → base_link TF       (전역 보정)       (레퍼런스 경로)
                           │                                          │
                           └─────────────────┬────────────────────────┘
@@ -2420,13 +2420,13 @@ CSV row 1924 : datum 기준 +22.65 m (경로 파일 끝)
 
 ---
 
-**⑥ `Transform data too old when converting from utm to odom` → 즉시 `Reached the goal!`**
+**⑥ `Transform data too old when converting from map to odom` → 즉시 `Reached the goal!`**
 
 | 항목 | 내용 |
 | :--- | :--- |
 | 증상 | `FollowPath goal 수락됨` → 수십 ms 만에 `Reached the goal!`. 차량이 전혀 이동하지 않음. |
 | 에러 | `[tf_help]: Transform data too old … Data time: 1780166575s, Transform time: 463s` |
-| 원인 | `csv_to_utm` 노드가 `use_sim_time` 미설정 → `path.header.stamp = this->get_clock()->now()` 가 **벽시계(wall clock) 시간**(~1780166575 s)을 반환. 반면 `controller_server` / 글로벌 EKF는 `use_sim_time: true` → TF는 **CARLA 시뮬레이션 시간**(~463 s)으로 발행. 두 클록이 완전히 달라 `utm→odom` TF 조회 실패. TF 조회 실패 시 MPPI 는 유효한 path pose 를 0개로 보고, SimpleGoalChecker 가 즉시 도달 판정. |
+| 원인 | `csv_to_utm` 노드가 `use_sim_time` 미설정 → `path.header.stamp = this->get_clock()->now()` 가 **벽시계(wall clock) 시간**(~1780166575 s)을 반환. 반면 `controller_server` / 글로벌 EKF는 `use_sim_time: true` → TF는 **CARLA 시뮬레이션 시간**(~463 s)으로 발행. 두 클록이 완전히 달라 `map→odom` TF 조회 실패. TF 조회 실패 시 MPPI 는 유효한 path pose 를 0개로 보고, SimpleGoalChecker 가 즉시 도달 판정. |
 | 수정 파일 | `mppi_ws/src/gnss_to_utm/launch/csv_to_utm.launch.py` |
 | 수정 내용 | `csv_to_utm` 노드 실행 시 `use_sim_time: True` 파라미터 추가 |
 
@@ -2464,7 +2464,7 @@ csv_to_utm_node = Node(
 | 항목 | 내용 |
 | :--- | :--- |
 | 증상 | `[WARN] Control loop missed its desired rate of 20.0000Hz` 가 수십 초 연속 출력된 후, `[ERROR] Lookup would require extrapolation into the future` → `[WARN] Aborting handle.` |
-| 에러 | `Requested time T+0.05 but the latest data is at time T, when looking up transform from frame [odom] to frame [utm]` |
+| 에러 | `Requested time T+0.05 but the latest data is at time T, when looking up transform from frame [odom] to frame [map]` |
 | 원인 | MPPI 궤적 계산(CPU 단일 스레드)이 한 제어 주기(50 ms)를 초과. 제어 루프가 실제 시간보다 뒤처지면서 TF 조회 시 요청 시각이 TF 버퍼의 최신 데이터보다 50 ms 미래가 됨 → 하드 예외 발생 → 즉시 ABORT. `failure_tolerance` 타이머와 무관한 hard-error 경로로 종료됨 |
 | 원인 수치 | `batch_size=2000, time_steps=56, controller_frequency=20 Hz` 기준 약 60 ms 소요 → 20 Hz 예산(50 ms) 초과 |
 | 해결 A (즉시 적용) | `nav2_carla_params.yaml` 에서 계산량 감소: `batch_size: 2000 → 1000`, `time_steps: 56 → 40`, `visualize: false`, `controller_frequency: 10.0`, `model_dt: 0.10` |
@@ -2493,7 +2493,7 @@ csv_to_utm_node = Node(
 | 증상 | 주차 시도 시 플래너가 빈 경로를 반환, `[PARK] 주차 경로 계산 실패 (빈 경로)` 로그 |
 | 에러 | `[costmap_2d]: Sensor origin at (36.20, -117.72) is out of map bounds (0.00, 0.00) to (4.95, 4.95)` |
 | 원인 | `global_costmap`에 `rolling_window`, `width`, `height`, `resolution` 미설정 → Nav2 기본값 적용: **5 m × 5 m 고정 격자, 원점 UTM (0,0)에 앵커됨**. 로봇의 실제 UTM 위치(예: 36.20, -117.72)가 맵 완전 밖에 있어 플래너가 시작점을 찾지 못함 |
-| 핵심 개념 | `global_frame: utm`은 좌표계 선택이고, costmap 크기/원점은 별도 파라미터. `rolling_window: false`(기본값)이면 costmap 원점이 UTM (0,0)에 고정됨 |
+| 핵심 개념 | `global_frame: map`은 좌표계 선택이고, costmap 크기/원점은 별도 파라미터. `rolling_window: false`(기본값)이면 costmap 원점이 UTM (0,0)에 고정됨 |
 | 수정 파일 | `dual_filter/config/nav2_carla_params.yaml` |
 | 수정 내용 | `global_costmap` 섹션에 추가: `rolling_window: true`, `width: 200`, `height: 200`, `resolution: 0.2`, `transform_tolerance: 0.5` |
 | 확인 | `ros2 topic echo /global_costmap/costmap --no-arr` → `info.origin.position` 이 로봇 위치 근처로 업데이트되는지 확인 |
@@ -3490,7 +3490,7 @@ CSV 추종 중에는 전진이 주이지만, 주차 모드에서는 SmacPlannerH
 ```text
 RViz "2D Goal Pose" 클릭 (G키 단축키)
   ↓ /goal_pose (PoseStamped) 발행
-    frame_id = RViz Fixed Frame (utm 또는 odom 권장)
+    frame_id = RViz Fixed Frame (map 또는 odom 권장)
     position = 후륜축이 도달해야 할 좌표
     orientation = 주차 완료 시 차량 전면 방향
 
@@ -3528,7 +3528,7 @@ mode_manager._goal_pose_cb()
 | 주차 경로 계산 실패 (빈 경로) | global_costmap 미초기화 또는 목표가 LETHAL 셀 내부 | `ros2 topic echo /global_costmap/costmap` |
 | 차량 정지 후 미동 없음 | `cmd_vel_to_carla` 후진 처리 누락 (`ctrl.reverse=False`) | `ros2 topic echo /cmd_vel` 으로 vx < 0 확인 |
 | 주차 후 복귀 안 됨 | `_on_parking_result` 미호출 (action 응답 없음) | `ros2 topic echo /mode_status` 로 PARKING 지속 확인 |
-| RViz Fixed Frame ≠ utm | goal_pose TF 변환 실패 → planner 즉시 실패 | `/goal_pose` echo의 `frame_id` 확인 |
+| RViz Fixed Frame ≠ map | goal_pose TF 변환 실패 → planner 즉시 실패 | `/goal_pose` echo의 `frame_id` 확인 |
 
 ---
 
@@ -3544,7 +3544,7 @@ ROS 2의 TF 시스템(`tf2_ros::Buffer`)은 노드가 발행한 좌표 변환(TF
 현재 시각 t_now = 100.00 s
 tf 버퍼 최신 타임스탬프 = 99.95 s  (50 ms 지연)
 
-lookupTransform(odom, utm, t_now) 요청
+lookupTransform(odom, map, t_now) 요청
 → t_now(100.00) > 버퍼 최신(99.95)
 → "미래 시각으로 외삽이 필요함"
 → ExtrapolationException 발생
@@ -3572,7 +3572,7 @@ tolerance를 초과해도 도착하지 않으면 → 에러 또는 경고 후 �
 ```text
 CARLA Simulation Time (sim time)
   ↓ /clock 토픽으로 발행
-  ↓ global_ekf가 /clock 구독 → utm→odom TF 발행
+  ↓ global_ekf가 /clock 구독 → map→odom TF 발행
   ↓ controller_server가 TF 요청
 
 CARLA가 렉(tick 지연)을 겪으면:
@@ -3596,7 +3596,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 | `gnss_to_odom` | `dual_filter/gnss_to_odom.py` | ❌ | `tf2_ros` import 없음. UTM→ROS 변환을 수식으로 계산해 `/odometry/gnss` 토픽으로 발행 |
 | `follow_path_client` | `dual_filter/follow_path_client.py` | ❌ | `tf2_ros` import 없음. IDLE/CSV_FOLLOWING/PARKING 상태 머신. `/odometry/local` pose로 waypoint를 수학적으로 탐색하고, FollowPath / ComputePathToPose action goal 전송 |
 | `cmd_vel_to_carla` | `dual_filter/cmd_vel_to_carla.py` | ❌ | `tf2_ros` import 없음. `/cmd_vel` Twist를 CARLA Python API로 직접 변환 |
-| `csv_to_utm` | `gnss_to_utm/src/csv_to_utm.cpp` | ❌ | `tf2_ros` include 없음. `/utm_datum`을 받아 수식으로 utm 프레임 Path 생성 |
+| `csv_to_utm` | `gnss_to_utm/src/csv_to_utm.cpp` | ❌ | `tf2_ros` include 없음. `/utm_datum`을 받아 수식으로 map 프레임 Path 생성 |
 | `f9r_to_utm` | `gnss_to_utm/src/f9r_to_utm.cpp` | ❌ | NavSatFix → UTM 수식 변환만 수행 |
 | `f9p_to_utm` | `gnss_to_utm/src/f9p_to_utm.cpp` | ❌ | NavSatFix → UTM 수식 변환만 수행 |
 | `azimuth_angle_calculator` | `gnss_to_utm/src/azimuth_angle_calculator.cpp` | ❌ | TF 조회 없음. 단, 두 GNSS 메시지 간 타임스탬프 동기화 허용 오차(`max_time_diff_sec: 0.1`)를 자체적으로 가짐 — 이것은 TF tolerance가 아니라 메시지 동기화 기준 |
@@ -3608,7 +3608,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 | 노드 | TF 조회 여부 | 내용 | tolerance 파라미터 | 현재 설정 |
 | :--- | :---: | :--- | :--- | :--- |
 | `local_ekf` | ⚠️ 조건부 | 센서 `header.frame_id ≠ base_link_frame`이면 TF 조회로 센서 위치 보정. 우리 IMU·wheel odom은 `base_link` 또는 `odom` 프레임으로 발행되므로 실질적 조회 최소화 | `transform_timeout` (default: 0.1 s) | **명시 설정 없음 — 기본값 사용** |
-| `global_ekf` | ⚠️ 조건부 | 동일. `/odometry/gnss`(frame: utm), IMU(frame: base_link), wheel odom(frame: odom) — 각 센서 프레임이 이미 설정된 프레임과 일치하면 TF 조회 발생 안 함 | `transform_timeout` (default: 0.1 s) | **명시 설정 없음 — 기본값 사용** |
+| `global_ekf` | ⚠️ 조건부 | 동일. `/odometry/gnss`(frame: map), IMU(frame: base_link), wheel odom(frame: odom) — 각 센서 프레임이 이미 설정된 프레임과 일치하면 TF 조회 발생 안 함 | `transform_timeout` (default: 0.1 s) | **명시 설정 없음 — 기본값 사용** |
 
 > robot_localization의 `transform_timeout`은 "센서 프레임→base_link 변환을 기다리는 최대 시간"이다. 우리 센서들이 이미 적절한 프레임으로 발행되고 있어 현재는 문제가 없지만, 센서 프레임이 바뀔 경우 `ekf_params.yaml`에 `transform_timeout: 0.5`를 추가해야 한다.
 
@@ -3616,7 +3616,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 
 | 노드 | TF 조회 내용 | tolerance 파라미터 | 현재 설정 | 수정 이력 |
 | :--- | :--- | :--- | :--- | :--- |
-| `controller_server` | `odom → utm` 변환으로 robot_pose를 global plan 프레임으로 변환 | `transform_tolerance` | **0.5 s** ✅ | 기본값 0.1 s → 0.5 s 수정 (주행 중 차량 정지 버그 수정) |
+| `controller_server` | `odom → map` 변환으로 robot_pose를 global plan 프레임으로 변환 | `transform_tolerance` | **0.5 s** ✅ | 기본값 0.1 s → 0.5 s 수정 (주행 중 차량 정지 버그 수정) |
 | `local_costmap` | `odom → base_link` 변환으로 로봇 위치를 costmap에서 추적 | `transform_tolerance` | **0.5 s** ✅ | 초기 설정부터 0.5 s |
 
 ---
@@ -3628,7 +3628,7 @@ CARLA가 렉(tick 지연)을 겪으면:
 ```text
 [controller_server]: Exception in transformPose: Lookup would require extrapolation
 into the future. Requested time 265.118526 but the latest data is at time 265.068526,
-when looking up transform from frame [odom] to frame [utm]
+when looking up transform from frame [odom] to frame [map]
 [controller_server]: Unable to transform robot pose into global plan's frame
 [controller_server]: [follow_path] [ActionServer] Aborting handle.
 ```
@@ -3659,7 +3659,7 @@ Nav2의 `transform_tolerance`는 `lookupTransform` 호출 시 **"요청 시각�
 
 | 파라미터 위치 | 파라미터명 | 현재 값 | 적용 대상 |
 | :--- | :--- | :---: | :--- |
-| `controller_server.ros__parameters` | `transform_tolerance` | **0.5 s** | `odom → utm` 변환 (robot pose를 global plan 프레임으로 변환할 때) |
+| `controller_server.ros__parameters` | `transform_tolerance` | **0.5 s** | `odom → map` 변환 (robot pose를 global plan 프레임으로 변환할 때) |
 | `local_costmap.ros__parameters` | `transform_tolerance` | **0.5 s** | `odom → base_link` 변환 (로봇 위치를 costmap 안에서 추적할 때) |
 
 ```yaml
@@ -3709,7 +3709,7 @@ global_ekf:
 | :--- | :---: | :---: | :---: |
 | `/wheel_encoder/data` | `base_link` | `base_link` | ❌ 불필요 |
 | `/imu/data` | `base_link` | `base_link` | ❌ 불필요 |
-| `/odometry/gnss` | `utm` | `utm` (world_frame) | ❌ 불필요 |
+| `/odometry/gnss` | `map` | `map` (world_frame) | ❌ 불필요 |
 
 센서 프레임이 이미 일치하므로 EKF가 `lookupTransform`을 호출할 일이 없고, `transform_timeout` 기본값(0.1 s)이 문제를 일으키지 않는다.
 
@@ -4103,7 +4103,7 @@ RViz "2D Goal Pose"(단축키 G) 드래그
 
 기동 중 건강 체크:
 ```bash
-ros2 run tf2_tools view_frames            # utm → odom → base_link
+ros2 run tf2_tools view_frames            # map → odom → base_link
 ros2 lifecycle get /controller_server     # active [3]
 ros2 action info /follow_path             # Action servers: 1
 ros2 topic echo /cmd_vel                  # 클릭 후 속도 명령 발행 확인
@@ -4130,15 +4130,15 @@ RoadRunner xodr에는 `<geoReference>`가 없어 GNSS가 (0,0) 기준이 된다(
 ### 15.10 CARLA 좌표 ↔ UTM 변환 및 맵 시각화/검증 도구
 
 > **이 절의 목적**: 맵의 차선·장애물 좌표를 **정적 costmap(StaticLayer)** 으로 굽거나 절대 위치를
-> 다룰 때, CARLA 월드 좌표를 ROS 스택이 쓰는 **UTM/`utm` 프레임**으로 변환하는 방법과 그 정확성을
+> 다룰 때, CARLA 월드 좌표를 ROS 스택이 쓰는 **UTM/`map` 프레임**으로 변환하는 방법과 그 정확성을
 > 검증하는 도구를 기록한다. 15.9(geoReference 주입)는 _실좌표를 맵에 박아 넣는_ 방법이고, 이 절은
 > _geoReference를 건드리지 않고 CARLA 자신의 georeference로 오프라인 변환을 얻는_ 방법이다.
 
 #### 배경 — 왜 변환이 필요한가
 
 `CustomMap/visualize_map.py`(아래)가 보여주는 좌표는 **CARLA 월드 (x, y) 미터**다. 반면 Nav2/dual_filter
-스택은 [Section 2.3](#23-utm--전역-절대-기준점)의 **`utm` 프레임**(datum-상대)에서 동작한다. 따라서
-맵 좌표를 costmap에 쓰려면 `CARLA world → UTM → utm 프레임` 변환이 필요하다.
+스택은 [Section 2.3](#23-map--전역-절대-기준점)의 **`map` 프레임**(datum-상대)에서 동작한다. 따라서
+맵 좌표를 costmap에 쓰려면 `CARLA world → UTM → map 프레임` 변환이 필요하다.
 
 핵심은 **CARLA 내장 GNSS 센서가 lat/lon을 만드는 것과 똑같은 georeference를 오프라인에서도 그대로
 재현할 수 있다**는 점이다. `carla.Map.transform_to_geolocation()`이 그 georeference를 직접 노출한다.
@@ -4155,14 +4155,14 @@ CARLA world (x, y)
 절대 UTM (E, N)            ← /f9p_utm 과 동일한 값
    │  ③ (E − datum_E), −(N − datum_N)   ← gnss_to_odom.py datum 적용 + CARLA +Y=right 미러링
    ▼
-ROS utm 프레임 (x_ros, y_ros)
+ROS map 프레임 (x_ros, y_ros)
 ```
 
 - **① georeference**: 이 맵들은 xodr에 `<geoReference>`가 없어(`cannot parse georeference: ''`) CARLA
   기본 georeference를 쓴다. 실측 결과 기본 기준점은 **lat≈42.0, lon≈2.0 (바르셀로나/UAB)** 이다.
 - **② UTM 공식**: `visualize_map.py`의 `to_utm()`은 `gnss_to_utm/utm_converter.hpp`의 `toUTM()`과
   **동일한 수식**(k0=0.9996, false easting 500000, zone=lon 기반)이라 라이브 `f9r_to_utm`과 비트 단위로 일치한다.
-- **③ datum**: [Section 2.3](#23-utm--전역-절대-기준점)대로 datum은 실행마다 달라진다. 정적 지도를 미리
+- **③ datum**: [Section 2.3](#23-map--전역-절대-기준점)대로 datum은 실행마다 달라진다. 정적 지도를 미리
   구워 재사용하려면 datum을 **고정 UTM 값으로 하드코딩**해야 ③ 변환이 실행 불변이 된다.
 
 #### 왜 라이브 파이프라인과 동일한가 (검증 완료)

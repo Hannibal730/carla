@@ -1,7 +1,7 @@
 """
 Dual Filter Architecture Launch File — REP-105
 =============================================
-TF tree:  utm ──[global_ekf]──> odom ──[local_ekf]──> base_link
+TF tree:  map ──[global_ekf]──> odom ──[local_ekf]──> base_link
 
 Topic remappings:
   CARLA                        →  Internal
@@ -95,7 +95,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # Node 3: Global EKF  →  /odometry/global  +  utm → odom TF
+    # Node 3: Global EKF  →  /odometry/global  +  map → odom TF
     #   /imu/data is remapped from /carla/car/imu/data
     # ------------------------------------------------------------------
     global_ekf = Node(
@@ -127,7 +127,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # Node 4b: GNSS path  →  /path/gnss  (raw GNSS/dual-GNSS odometry, utm frame)
+    # Node 4b: GNSS path  →  /path/gnss  (raw GNSS/dual-GNSS odometry, map frame)
     # ------------------------------------------------------------------
     gnss_path = Node(
         package='dual_filter',
@@ -137,12 +137,12 @@ def generate_launch_description():
         parameters=[sim_time_param, {
             'odom_topic': '/odometry/gnss',
             'path_topic': '/path/gnss',
-            'frame_id':   'utm',
+            'frame_id':   'map',
         }],
     )
 
     # ------------------------------------------------------------------
-    # Node 4c: Global EKF path  →  /path/global_ekf  (fused odometry, utm frame)
+    # Node 4c: Global EKF path  →  /path/global_ekf  (fused odometry, map frame)
     # ------------------------------------------------------------------
     global_ekf_path = Node(
         package='dual_filter',
@@ -152,7 +152,7 @@ def generate_launch_description():
         parameters=[sim_time_param, {
             'odom_topic': '/odometry/global',
             'path_topic': '/path/global_ekf',
-            'frame_id':   'utm',
+            'frame_id':   'map',
         }],
     )
 

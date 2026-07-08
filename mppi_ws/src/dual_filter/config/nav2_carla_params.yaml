@@ -3,7 +3,7 @@
 #
 # 대상 차량 : vehicle.micro.microlino  (wheelbase ≈ 1.47 m, width ≈ 1.475 m)
 # Nav2 버전 : 1.1.20 (Humble)
-# TF tree  : utm → odom → base_link  (REP-105, dual_filter 스택 출력)
+# TF tree  : map → odom → base_link  (REP-105, dual_filter 스택 출력)
 #
 # 실행 방법:
 #   ros2 run nav2_controller controller_server \
@@ -33,7 +33,7 @@ controller_server:
     odom_topic: /odometry/local
 
     # ── TF 변환 허용 지연 ────────────────────────────────────────────────────────
-    # controller_server가 odom→utm 변환 시 허용하는 TF 지연 시간.
+    # controller_server가 odom→map 변환 시 허용하는 TF 지연 시간.
     # CARLA sim time에서 global_ekf TF가 최대 50ms 지연 → 기본값 0.1s 초과 가능.
     # local_costmap의 transform_tolerance(0.5s)와 일치시켜 일관성 유지.
     transform_tolerance: 0.5
@@ -749,9 +749,9 @@ planner_server:
 #   global_costmap: planner_server 가 경로 계산 시 1회 참조.
 #                   rolling window, 넓은 범위, 2 Hz 갱신으로 충분.
 #
-# global_frame = utm 이유:
-#   CSV 경로 및 주차 목표(goal_pose) 가 utm 프레임으로 발행되므로 플래너가 같은 프레임에서 경로를 탐색해야 좌표 변환 없이 일관성 유지.
-#   RViz 에서 "2D Goal Pose" 클릭 시 Fixed Frame 이 utm 이어야 goal_pose.header.frame_id = "utm" 으로 발행되어 TF 변환 실패를 방지.
+# global_frame = map 이유:
+#   CSV 경로 및 주차 목표(goal_pose) 가 map 프레임으로 발행되므로 플래너가 같은 프레임에서 경로를 탐색해야 좌표 변환 없이 일관성 유지.
+#   RViz 에서 "2D Goal Pose" 클릭 시 Fixed Frame 이 map 이어야 goal_pose.header.frame_id = "map" 으로 발행되어 TF 변환 실패를 방지.
 #
 # 정적 지도(map_server) 없이 LiDAR 실시간 장애물만으로 운용.
 # 차량 주변 LiDAR 가 인식한 장애물만 반영되므로, 시야 밖 장애물은
@@ -764,7 +764,7 @@ global_costmap:
 
       # planner_server 는 global_costmap 기준 좌표계에서 경로를 탐색한다.
       # RViz Fixed Frame 이 이 값과 다르면 goal_pose TF 변환 실패 → 경로 계산 실패.
-      global_frame: utm
+      global_frame: map
       robot_base_frame: base_link
 
       # 경로 계산은 주차 요청 시 1회만 수행되므로 갱신 주기가 낮아도 됨.
@@ -773,7 +773,7 @@ global_costmap:
       publish_frequency: 1.0           # Hz
 
       # rolling_window: true — costmap 원점이 로봇 중심을 따라 이동.
-      # false 로 설정하면 원점이 utm (0,0) 에 고정되어 로봇이 맵 바깥에 위치함.
+      # false 로 설정하면 원점이 map (0,0) 에 고정되어 로봇이 맵 바깥에 위치함.
       rolling_window: true
 
       # 맵 크기: 주차 기동에 필요한 탐색 거리를 충분히 커버해야 함.

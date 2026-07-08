@@ -1,6 +1,6 @@
 # =============================================================================
 # Dual EKF parameters — REP-105 compliant
-#   utm → odom  : global_ekf  (world_frame: utm)
+#   map → odom  : global_ekf  (world_frame: map)
 #   odom → base_link : local_ekf (world_frame: odom)
 #
 # Topic remappings are handled in dual_filter.launch.py:
@@ -19,7 +19,7 @@ local_ekf:
     two_d_mode: true
     publish_tf: true
 
-    map_frame:       utm
+    map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
     world_frame:     odom        # local EKF lives in odom frame
@@ -56,7 +56,7 @@ local_ekf:
 # -----------------------------------------------------------------------------
 # Node 3: Global EKF  —  GNSS drift correction, absolute position for path tracking
 #   Inputs : /wheel_encoder/data (vx, vy=0)  +  /imu/data (wz)  +  /odometry/gnss (x, y, yaw)
-#   Output : /odometry/global  +  utm → odom TF
+#   Output : /odometry/global  +  map → odom TF
 # -----------------------------------------------------------------------------
 global_ekf:
   ros__parameters:
@@ -65,10 +65,10 @@ global_ekf:
     two_d_mode: true
     publish_tf: true
 
-    map_frame:       utm
+    map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
-    world_frame:     utm         # global EKF lives in utm frame → publishes utm→odom TF
+    world_frame:     map         # global EKF lives in map frame → publishes map→odom TF
 
     # /wheel_encoder/data  — vx (linear.x) + non-holonomic vy=0 constraint
     odom0: /wheel_encoder/data
