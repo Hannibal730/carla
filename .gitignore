@@ -23,7 +23,14 @@ PythonAPI/**/*.py[cod]
 
 !/*.ino
 !/ros2_sensor
-!/nav2_ws/src/navigation2/nav2_mppi_controller/CMakeLists.txt
+# Keep the nav2 workspace source tree, but not local colcon build artifacts.
+!/nav2_ws/
+/nav2_ws/*
+!/nav2_ws/src/
+!/nav2_ws/src/**
+/nav2_ws/build/
+/nav2_ws/install/
+/nav2_ws/log/
 
 !/*.ino
 
