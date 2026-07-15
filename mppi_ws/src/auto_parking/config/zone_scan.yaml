@@ -1,0 +1,48 @@
+zone_scan:
+  ros__parameters:
+    # GPS 게이트 기반 Parking Scan / Mode 상태 전환을 활성화한다.
+    gate_control_enabled: true
+
+    # Zone1: A에서 scan 시작, B에서 scan 종료/mode 시작, A에서 mode 종료
+    # Zone2: A에서 scan 시작, B에서 scan 종료/mode 시작, B에서 mode 종료
+    # [GPS1_Easting, GPS1_Northing, GPS2_Easting, GPS2_Northing]
+    zone1_gate_a_utm: [417080.0, 4650251.0, 417095.0, 4650251.0]
+    # 새 Zone1 gate B의 실제 UTM 좌표로 교체한다.
+    zone1_gate_b_utm: [417080.0, 4650216.0, 417095.0, 4650216.0]
+
+    zone2_gate_a_utm: [417026.0, 4650252.0, 417017.0, 4650261.0]
+    zone2_gate_b_utm: [417080.0, 4650256.0, 417079.0, 4650274.0]
+
+    # 차량의 이전-현재 UTM 이동 선분과 게이트 사이 허용 거리(m)
+    gate_tolerance: 0.5
+
+    # 통과 후 이 거리만큼 게이트에서 벗어나야 다음 통과를 감지한다.
+    gate_rearm_distance: 1.5
+
+    # false이면 Zone1과 Zone2에서 기록한 스캔을 하나의 map에 함께 유지한다.
+    clear_map_on_start: false
+
+    # 두 파킹존 폴리곤 내부와 경계 바깥 1m까지만 스캔을 기록한다.
+    accumulation_scope: parking_zones
+    roi_margin: 1.0
+
+    # EKF pose를 초기값으로 현재 scan을 누적 voxel submap에 정합한다.
+    icp_enabled: true
+    icp_max_iterations: 5
+    icp_min_submap_points: 30
+    icp_min_correspondences: 10
+    icp_max_correspondence_distance: 0.5
+    icp_normal_radius: 0.6
+    icp_max_normal_ratio: 0.3
+    icp_huber_delta: 0.1
+    icp_max_translation: 0.5
+    icp_max_rotation_deg: 3.0
+    icp_max_scan_points: 300
+    icp_max_submap_points: 1500
+    icp_prior_weight: 1.0
+    icp_min_improvement: 0.002
+    icp_max_point_to_line_rmse: 0.15
+
+    utm_position_topic: /f9p_utm
+    parking_mode_topic: /parkingMode
+    parking_scan_topic: /parkingScan

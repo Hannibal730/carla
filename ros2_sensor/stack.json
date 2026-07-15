@@ -42,11 +42,11 @@
         {
             "type": "sensor.lidar.ray_cast",
             "id": "lidar_2d",
-            "spawn_point": {"x": 1.2, "y": 0.0, "z": 0.45, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+            "spawn_point": {"x": 1.2, "y": 0.0, "z": 0.60, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "attributes": {
                 "range": 20,
                 "channels": 1,
-                "points_per_second": 1000,
+                "points_per_second": 20000,
                 "rotation_frequency": 20,
                 "upper_fov": 0.0,
                 "lower_fov": 0.0,
