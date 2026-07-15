@@ -22,7 +22,7 @@ from rclpy.qos import (
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Header
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -65,6 +65,8 @@ class ZoneScan(Node):
         self.declare_parameter('frame_id', 'map')
         self.declare_parameter('datum_topic', '/utm_datum')
         self.declare_parameter('marker_topic', '/parking_zones')
+        self.declare_parameter(
+            'occupied_points_topic', '/zone_scan/occupied_points')
         self.declare_parameter('line_width', 0.25)
         self.declare_parameter('zone_height', 0.05)
         self.declare_parameter(
@@ -122,6 +124,8 @@ class ZoneScan(Node):
         self._frame_id = str(self.get_parameter('frame_id').value)
         datum_topic = str(self.get_parameter('datum_topic').value)
         marker_topic = str(self.get_parameter('marker_topic').value)
+        occupied_points_topic = str(
+            self.get_parameter('occupied_points_topic').value)
         self._line_width = float(self.get_parameter('line_width').value)
         self._zone_height = float(self.get_parameter('zone_height').value)
         lidar_topic = str(self.get_parameter('lidar_topic').value)
@@ -274,6 +278,8 @@ class ZoneScan(Node):
         )
         self._publisher = self.create_publisher(
             MarkerArray, marker_topic, latched_qos)
+        self._occupied_points_publisher = self.create_publisher(
+            PointCloud2, occupied_points_topic, latched_qos)
         self._datum_subscription = self.create_subscription(
             PointStamped, datum_topic, self._on_datum, latched_qos)
         self._parking_mode_publisher = self.create_publisher(
@@ -971,6 +977,22 @@ class ZoneScan(Node):
             return
 
         stamp = self.get_clock().now().to_msg()
+        cloud_header = Header()
+        cloud_header.frame_id = self._frame_id
+        cloud_header.stamp = stamp
+        resolution = self._history_resolution
+        occupied_points = [
+            (
+                (voxel_x + 0.5) * resolution,
+                (voxel_y + 0.5) * resolution,
+                self._zone_height + 0.01,
+            )
+            for voxel_x, voxel_y in self._occupied_voxels
+        ]
+        self._occupied_points_publisher.publish(
+            point_cloud2.create_cloud_xyz32(
+                cloud_header, occupied_points))
+
         marker_array = MarkerArray()
 
         clear = Marker()

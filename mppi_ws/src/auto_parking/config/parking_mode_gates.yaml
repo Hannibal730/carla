@@ -1,0 +1,27 @@
+# Parking mode GPS gate configuration.
+# zone_scan.launch.py loads this file after zone_scan.yaml, so gate-related
+# values in this file are authoritative.
+zone_scan:
+  ros__parameters:
+    # GPS 게이트 기반 Parking Scan / Mode 상태 전환을 활성화한다.
+    gate_control_enabled: true
+
+    # Zone1: A에서 scan 시작, B에서 scan 종료/mode 시작, A에서 mode 종료
+    # Zone2: A에서 scan 시작, B에서 scan 종료/mode 시작, B에서 mode 종료
+    # [GPS1_Easting, GPS1_Northing, GPS2_Easting, GPS2_Northing]
+    zone1_gate_a_utm: [417080.0, 4650251.0, 417095.0, 4650251.0]
+    zone1_gate_b_utm: [417080.0, 4650220.0, 417095.0, 4650220.0]
+
+    zone2_gate_a_utm: [417026.0, 4650252.0, 417017.0, 4650261.0]
+    zone2_gate_b_utm: [417065.0, 4650256.0, 417065.0, 4650274.0]
+
+    # 차량 이동 선분과 게이트 사이 허용 거리 및 재감지 거리(m)
+    gate_tolerance: 0.5
+    gate_rearm_distance: 1.5
+
+    # true이면 각 구역 스캔 시작 시 이전 누적점을 지운다.
+    clear_map_on_start: false
+
+    utm_position_topic: /f9p_utm
+    parking_mode_topic: /parkingMode
+    parking_scan_topic: /parkingScan

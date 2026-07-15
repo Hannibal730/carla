@@ -14,18 +14,26 @@ def generate_launch_description() -> LaunchDescription:
     package_share = get_package_share_directory('auto_parking')
     rviz_config = os.path.join(
         package_share, 'rviz', 'zone_scan.rviz')
-    default_gate_config = os.path.join(
+    default_zone_scan_config = os.path.join(
         package_share, 'config', 'zone_scan.yaml')
-    if not os.path.isfile(default_gate_config):
-        package_root = os.path.dirname(
-            os.path.dirname(os.path.realpath(__file__)))
-        source_gate_config = os.path.join(
+    default_gate_config = os.path.join(
+        package_share, 'config', 'parking_mode_gates.yaml')
+    package_root = os.path.dirname(
+        os.path.dirname(os.path.realpath(__file__)))
+    if not os.path.isfile(default_zone_scan_config):
+        source_zone_scan_config = os.path.join(
             package_root, 'config', 'zone_scan.yaml')
+        if os.path.isfile(source_zone_scan_config):
+            default_zone_scan_config = source_zone_scan_config
+    if not os.path.isfile(default_gate_config):
+        source_gate_config = os.path.join(
+            package_root, 'config', 'parking_mode_gates.yaml')
         if os.path.isfile(source_gate_config):
             default_gate_config = source_gate_config
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     start_rviz = LaunchConfiguration('start_rviz')
+    zone_scan_config = LaunchConfiguration('zone_scan_config')
     gate_config = LaunchConfiguration('gate_config')
 
     return LaunchDescription([
@@ -36,6 +44,9 @@ def generate_launch_description() -> LaunchDescription:
             'start_rviz', default_value='false',
             description='Start another RViz process using the package config.'),
         DeclareLaunchArgument(
+            'zone_scan_config', default_value=default_zone_scan_config,
+            description='LiDAR accumulation and ICP configuration.'),
+        DeclareLaunchArgument(
             'gate_config', default_value=default_gate_config,
             description='Parking mode start/stop UTM gate configuration.'),
         Node(
@@ -43,7 +54,13 @@ def generate_launch_description() -> LaunchDescription:
             executable='zone_scan',
             name='zone_scan',
             output='screen',
-            parameters=[gate_config, {'use_sim_time': use_sim_time}],
+            # Later parameter files override earlier ones. Gate coordinates
+            # therefore have one authoritative source: gate_config.
+            parameters=[
+                zone_scan_config,
+                gate_config,
+                {'use_sim_time': use_sim_time},
+            ],
         ),
         Node(
             package='rviz2',

@@ -8,11 +8,13 @@
   전진 운동학: wz = vx * tan(δ) / L
   역변환:      δ = atan2(wz * L, vx)
 
-CARLA Python API 가 필요하므로 .venv 환경에서 실행한다.
+CARLA Python API 가 필요하다. ROS 2 console script는 /usr/bin/python3로
+실행되므로 .venv의 site-packages를 PYTHONPATH에도 추가한다.
 
 실행 예시:
   cd ~/carla
   source .venv/bin/activate
+  export PYTHONPATH="$VIRTUAL_ENV/lib/python3.10/site-packages${PYTHONPATH:+:$PYTHONPATH}"
   source /opt/ros/humble/setup.bash
   source mppi/install/setup.bash
   ros2 run dual_filter cmd_vel_to_carla \

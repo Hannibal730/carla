@@ -1510,6 +1510,7 @@ is_reverse = (target_vx < 0)
 ```bash
 cd ~/carla
 source .venv/bin/activate
+export PYTHONPATH="$VIRTUAL_ENV/lib/python3.10/site-packages${PYTHONPATH:+:$PYTHONPATH}"
 source /opt/ros/humble/setup.bash
 source mppi_ws/install/setup.bash
 ros2 run dual_filter cmd_vel_to_carla \
@@ -2173,6 +2174,7 @@ cd ~/carla
 source /opt/ros/humble/setup.bash
 source ~/carla/mppi_ws/install/setup.bash
 source .venv/bin/activate
+export PYTHONPATH="$VIRTUAL_ENV/lib/python3.10/site-packages${PYTHONPATH:+:$PYTHONPATH}"
 ros2 run dual_filter cmd_vel_to_carla \
   --ros-args -p use_sim_time:=true \
   -- --rolename car --wheelbase 1.47
@@ -3478,11 +3480,16 @@ CSV 추종 중에는 전진이 주이지만, 주차 모드에서는 SmacPlannerH
 #### 후진 주차 전체 흐름
 
 ```text
-RViz "2D Goal Pose" 클릭 (G키 단축키)
+RViz "2D Goal Pose" 클릭 또는 auto_parking 자동 goal
   ↓ /goal_pose (PoseStamped) 발행
-    frame_id = RViz Fixed Frame (map 또는 odom 권장)
+    frame_id = map
     position = 후륜축이 도달해야 할 좌표
     orientation = 주차 완료 시 차량 전면 방향
+
+자동 goal의 경우:
+  /parkingMode=true
+    → /parking이 /point_parking/goal_pose(절대 UTM)를 /utm_datum 기준 map pose로 변환
+    → 같은 parkingMode=true 구간에서 /goal_pose를 한 번만 발행
 
 mode_manager._goal_pose_cb()
   ↓ 현재 CSV FollowPath 취소
@@ -4072,12 +4079,13 @@ PY
 
 ---
 
-### 15.8 클릭 주차 모드 동작 구조 (CSV 불필요)
+### 15.8 수동/자동 주차 모드 동작 구조 (CSV 불필요)
 
 `follow_path_client`는 IDLE / CSV_FOLLOWING / **PARKING** 상태 머신이다.
 
 ```text
-RViz "2D Goal Pose"(단축키 G) 드래그
+RViz "2D Goal Pose"(단축키 G) 또는
+/parkingMode=true → /parking → /point_parking 대표 goal
    → /goal_pose (geometry_msgs/PoseStamped)
    → follow_path_client._goal_pose_cb → PARKING 전환
    → planner_server.compute_path_to_pose (SmacPlannerHybrid)  ← 경로를 플래너가 생성

@@ -1,0 +1,13 @@
+parking:
+  ros__parameters:
+    parking_mode_topic: /parkingMode
+    point_goal_topic: /point_parking/goal_pose
+    point_goal_valid_topic: /point_parking/goal_valid
+    datum_topic: /utm_datum
+
+    # dual_filter mode_manager가 구독하는 Nav2 주차 목표 토픽
+    output_goal_topic: /goal_pose
+
+    # Point Parking goal은 절대 UTM, Nav2 planner/MPPI는 map 기준을 사용한다.
+    utm_frame_id: utm
+    map_frame_id: map

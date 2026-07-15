@@ -7,7 +7,6 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -16,6 +15,10 @@ def generate_launch_description() -> LaunchDescription:
     start_rviz = LaunchConfiguration('start_rviz')
     zone_scan_launch = os.path.join(
         package_share, 'launch', 'zone_scan.launch.py')
+    point_parking_launch = os.path.join(
+        package_share, 'launch', 'point_parking.launch.py')
+    parking_launch = os.path.join(
+        package_share, 'launch', 'parking.launch.py')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -31,18 +34,12 @@ def generate_launch_description() -> LaunchDescription:
                 'start_rviz': start_rviz,
             }.items(),
         ),
-        Node(
-            package='auto_parking',
-            executable='point_parking',
-            name='point_parking',
-            output='screen',
-            parameters=[{'use_sim_time': use_sim_time}],
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(point_parking_launch),
+            launch_arguments={'use_sim_time': use_sim_time}.items(),
         ),
-        Node(
-            package='auto_parking',
-            executable='parking',
-            name='parking',
-            output='screen',
-            parameters=[{'use_sim_time': use_sim_time}],
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(parking_launch),
+            launch_arguments={'use_sim_time': use_sim_time}.items(),
         ),
     ])

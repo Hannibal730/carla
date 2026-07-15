@@ -1,0 +1,27 @@
+point_parking:
+  ros__parameters:
+    frame_id: map
+    utm_frame_id: utm
+    datum_topic: /utm_datum
+    occupied_points_topic: /zone_scan/occupied_points
+
+    # 대표 goal: [UTM_Easting, UTM_Northing, yaw_rad]
+    goal_topic: /point_parking/goal_utm_yaw
+    goal_pose_topic: /point_parking/goal_pose
+    candidate_pose_topic: /point_parking/goal_candidates
+    goal_valid_topic: /point_parking/goal_valid
+    marker_topic: /point_parking/markers
+
+    # 벽-벽 또는 ROI끝-벽 사이의 최소 빈 공간 폭(m)
+    min_gap_width: 1.5
+
+    # 같은 벽으로 합칠 투영점 간격과 각 벽점의 좌우 여유(m)
+    wall_merge_distance: 0.35
+    wall_padding: 0.1
+
+    # 열린 변을 기준으로 이 깊이 안쪽의 벽점만 gap 계산에 사용한다.
+    wall_search_depth: 4.0
+    wall_behind_margin: 1.0
+    roi_endpoint_margin: 1.0
+    min_zone_wall_points: 3
+    marker_height: 0.15

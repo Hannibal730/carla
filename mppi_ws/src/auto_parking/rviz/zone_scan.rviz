@@ -41,6 +41,21 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /parking_zones
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Point Parking Goals
+      Namespaces:
+        parking_gap: true
+        parking_goal: true
+        parking_goal_label: true
+        parking_goal_yaw: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /point_parking/markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

@@ -203,7 +203,7 @@ Orbit View의 `Target Frame`도 `map`으로 설정한다. 이 값이 `f9r` 또�
 
 ## GPS 게이트 기반 Parking Scan / Mode
 
-`config/zone_scan.yaml`에 ParkingZone1과 ParkingZone2의 A/B 게이트를
+`config/parking_mode_gates.yaml`에 ParkingZone1과 ParkingZone2의 A/B 게이트를
 각각 두 UTM 점으로 설정한다.
 
 ```yaml

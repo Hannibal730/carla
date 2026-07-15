@@ -5,7 +5,7 @@
 상태 머신:
   IDLE
     └─→ CSV_FOLLOWING  : /csv_path 수신 시 자동 진입
-          └─→ PARKING  : RViz "2D Goal Pose" 클릭(/goal_pose) 시 전환
+          └─→ PARKING  : RViz 또는 /parking 자동 브리지의 /goal_pose 수신
                 └─→ CSV_FOLLOWING : 주차 완료 또는 /resume_path 수신 시 복귀
 
 토픽:
@@ -13,7 +13,7 @@
     /csv_path       (nav_msgs/Path,              transient_local) — CSV 경로
     /odometry/local (nav_msgs/Odometry,          10)              — 현재 위치
     /goal_pose      (geometry_msgs/PoseStamped,  10)              — 주차 목표
-                    RViz "2D Goal Pose" 툴이 이 토픽으로 발행
+                    RViz 또는 auto_parking/parking 노드가 발행
 
   발행
     /mode_status    (std_msgs/String,            10)              — 현재 모드 문자열
@@ -80,7 +80,7 @@ class ModeManager(Node):
 
         self.get_logger().info(
             'ModeManager 시작. /csv_path 와 /odometry/local 대기 중 ...\n'
-            '  RViz "2D Goal Pose" 클릭 → 주차 모드 전환\n'
+            '  RViz 또는 /parking 자동 goal 수신 → 주차 모드 전환\n'
             '  주차 완료 후 자동으로 CSV 경로 추종 복귀'
         )
 
@@ -103,7 +103,7 @@ class ModeManager(Node):
             self._try_start_csv()
 
     def _goal_pose_cb(self, msg: PoseStamped) -> None:
-        """RViz 2D Goal Pose 클릭 → 주차 모드 전환.
+        """RViz 또는 자동 Parking goal 수신 → 주차 모드 전환.
 
         새 목표가 올 때마다 시퀀스를 증가시켜, 진행 중이던 목표(및 그 취소로
         인해 뒤늦게 도착하는 콜백)를 무효화하고 곧바로 새 목표로 재타겟한다.
