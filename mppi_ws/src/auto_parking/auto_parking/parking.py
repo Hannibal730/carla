@@ -26,7 +26,8 @@ class Parking(Node):
         self.declare_parameter(
             'point_goal_valid_topic', '/point_parking/goal_valid')
         self.declare_parameter('datum_topic', '/utm_datum')
-        self.declare_parameter('output_goal_topic', '/goal_pose')
+        self.declare_parameter(
+            'output_goal_topic', '/point_parking/nav_goal')
         self.declare_parameter('utm_frame_id', 'utm')
         self.declare_parameter('map_frame_id', 'map')
 
@@ -58,7 +59,7 @@ class Parking(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
 
-        # ModeManager subscribes to /goal_pose with reliable volatile QoS.
+        # ModeManager subscribes with reliable volatile QoS.
         self._goal_publisher = self.create_publisher(
             PoseStamped, output_goal_topic, 10)
         self.create_subscription(
@@ -130,7 +131,7 @@ class Parking(Node):
         self._sent_for_current_mode = True
         self._waiting_reason = None
         self.get_logger().info(
-            '[PARKING GOAL] /goal_pose 전송 완료: '
+            '[PARKING GOAL] Point Parking goal 전송 완료: '
             f'x={map_goal.pose.position.x:.2f}, '
             f'y={map_goal.pose.position.y:.2f}, '
             f'frame={map_goal.header.frame_id}. '

@@ -4,7 +4,7 @@
 
 | ROS 노드 | 실행 파일 | 현재 역할 |
 | --- | --- | --- |
-| `/zone_scan` | `zone_scan` | GPS 게이트, ParkingScan 상태, LiDAR ROI 누적, point-to-line ICP, RViz Marker |
+| `/zone_scan` | `zone_scan` | GPS 게이트, LiDAR ROI 누적, point-to-line ICP, 열린 입구를 제외한 ROI 테두리 cost cloud 및 RViz Marker 발행 |
 | `/point_parking` | `point_parking` | 누적 벽 사이 1.5m 이상 gap 탐색, UTM goal/yaw 및 RViz Marker 발행 |
 | `/parking` | `parking` | parkingMode 상승 시 Point Parking UTM goal을 map으로 바꿔 Nav2/MPPI 흐름에 1회 전달 |
 
@@ -77,15 +77,17 @@ ros2 launch auto_parking auto_parking.launch.py start_rviz:=true
 ## Parking 자동 MPPI 연결
 
 `/parking` 노드는 `/parkingMode`가 `false -> true`로 전환될 때 최신 유효
-`/point_parking/goal_pose`를 한 번만 전달한다. Point Parking의 절대 UTM pose를
-`/utm_datum`으로 `map` pose로 변환해 `/goal_pose`에 발행한다.
+`/point_parking/goal_pose`를 `/point_parking/nav_goal`로 한 번만 전달한다.
+Point Parking의 절대 UTM pose를 `/utm_datum`으로 `map` pose로 변환해
+발행한다.
 
 ```text
 /parkingMode=true
   -> /parking: UTM goal을 map goal로 변환
-  -> /goal_pose
+  -> /point_parking/nav_goal
   -> dual_filter mode_manager: ComputePathToPose
   -> FollowPath(controller_id=ParkingPath)
+  -> 현재 N 고정, E=417069.41 직선 후진
   -> Nav2 MPPI
 ```
 

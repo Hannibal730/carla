@@ -3,11 +3,12 @@
 from collections import deque
 import os
 import re
-from math import ceil, floor, hypot
+from math import atan2, ceil, cos, floor, hypot, sin
 from typing import Dict, List, Tuple
 
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Point, PointStamped
+from geometry_msgs.msg import Point, PointStamped, PoseStamped
+from nav2_msgs.srv import ClearEntireCostmap
 import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
@@ -22,7 +23,7 @@ from rclpy.qos import (
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Bool, Header
+from std_msgs.msg import Bool, Header, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -67,10 +68,22 @@ class ZoneScan(Node):
         self.declare_parameter('marker_topic', '/parking_zones')
         self.declare_parameter(
             'occupied_points_topic', '/zone_scan/occupied_points')
+        self.declare_parameter(
+            'roi_boundary_points_topic',
+            '/zone_scan/roi_boundary_points')
+        self.declare_parameter(
+            'exit_gate_goal_topic', '/parking_exit/goal_utm')
+        self.declare_parameter(
+            'exit_zone_topic', '/parking_exit/zone')
+        self.declare_parameter(
+            'zone2_exit_gate_northing', 4650268.0)
+        self.declare_parameter('roi_boundary_resolution', 0.1)
         self.declare_parameter('line_width', 0.25)
         self.declare_parameter('zone_height', 0.05)
         self.declare_parameter(
             'lidar_topic', '/carla/car/lidar_2d/point_cloud')
+        self.declare_parameter(
+            'cost_lidar_topic', '/zone_scan/cost_lidar_points')
         self.declare_parameter('history_resolution', 0.15)
         self.declare_parameter('roi_margin', 1.0)
         self.declare_parameter('lidar_line_width', 0.12)
@@ -116,6 +129,12 @@ class ZoneScan(Node):
         self.declare_parameter('gate_tolerance', 0.5)
         self.declare_parameter('gate_rearm_distance', 1.0)
         self.declare_parameter('clear_map_on_start', False)
+        self.declare_parameter('clear_global_costmap_on_scan_start', True)
+        self.declare_parameter(
+            'clear_global_costmap_on_parking_mode_stop', True)
+        self.declare_parameter(
+            'global_costmap_clear_service',
+            '/global_costmap/clear_entirely_global_costmap')
         self.declare_parameter('utm_position_topic', '/f9p_utm')
         self.declare_parameter('parking_mode_topic', '/parkingMode')
         self.declare_parameter('parking_scan_topic', '/parkingScan')
@@ -126,9 +145,21 @@ class ZoneScan(Node):
         marker_topic = str(self.get_parameter('marker_topic').value)
         occupied_points_topic = str(
             self.get_parameter('occupied_points_topic').value)
+        roi_boundary_points_topic = str(
+            self.get_parameter('roi_boundary_points_topic').value)
+        exit_gate_goal_topic = str(
+            self.get_parameter('exit_gate_goal_topic').value)
+        exit_zone_topic = str(
+            self.get_parameter('exit_zone_topic').value)
+        self._zone2_exit_gate_northing = float(
+            self.get_parameter('zone2_exit_gate_northing').value)
+        self._roi_boundary_resolution = float(
+            self.get_parameter('roi_boundary_resolution').value)
         self._line_width = float(self.get_parameter('line_width').value)
         self._zone_height = float(self.get_parameter('zone_height').value)
         lidar_topic = str(self.get_parameter('lidar_topic').value)
+        cost_lidar_topic = str(
+            self.get_parameter('cost_lidar_topic').value)
         self._history_resolution = float(
             self.get_parameter('history_resolution').value)
         self._roi_margin = float(self.get_parameter('roi_margin').value)
@@ -186,6 +217,14 @@ class ZoneScan(Node):
             self.get_parameter('gate_rearm_distance').value)
         self._clear_map_on_start = bool(
             self.get_parameter('clear_map_on_start').value)
+        self._clear_global_costmap_on_scan_start = bool(
+            self.get_parameter(
+                'clear_global_costmap_on_scan_start').value)
+        self._clear_global_costmap_on_parking_mode_stop = bool(
+            self.get_parameter(
+                'clear_global_costmap_on_parking_mode_stop').value)
+        global_costmap_clear_service = str(
+            self.get_parameter('global_costmap_clear_service').value)
         utm_position_topic = str(
             self.get_parameter('utm_position_topic').value)
         parking_mode_topic = str(
@@ -195,6 +234,9 @@ class ZoneScan(Node):
 
         if self._history_resolution <= 0.0:
             raise ValueError('history_resolution must be greater than zero')
+        if self._roi_boundary_resolution <= 0.0:
+            raise ValueError(
+                'roi_boundary_resolution must be greater than zero')
         if self._roi_margin < 0.0:
             raise ValueError('roi_margin cannot be negative')
         if self._lidar_line_width <= 0.0:
@@ -269,6 +311,11 @@ class ZoneScan(Node):
             'zone2 gate a': True,
             'zone2 gate b': True,
         }
+        self._global_costmap_clear_pending = False
+        self._global_costmap_clear_in_flight = False
+        self._global_costmap_service_warning_reported = False
+        self._global_costmap_clear_reason = ''
+        self._global_costmap_clear_in_flight_reason = ''
 
         latched_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -280,12 +327,20 @@ class ZoneScan(Node):
             MarkerArray, marker_topic, latched_qos)
         self._occupied_points_publisher = self.create_publisher(
             PointCloud2, occupied_points_topic, latched_qos)
+        self._roi_boundary_points_publisher = self.create_publisher(
+            PointCloud2, roi_boundary_points_topic, latched_qos)
+        self._exit_gate_goal_publisher = self.create_publisher(
+            PoseStamped, exit_gate_goal_topic, latched_qos)
+        self._exit_zone_publisher = self.create_publisher(
+            String, exit_zone_topic, latched_qos)
         self._datum_subscription = self.create_subscription(
             PointStamped, datum_topic, self._on_datum, latched_qos)
         self._parking_mode_publisher = self.create_publisher(
             Bool, parking_mode_topic, latched_qos)
         self._parking_scan_publisher = self.create_publisher(
             Bool, parking_scan_topic, latched_qos)
+        self._global_costmap_clear_client = self.create_client(
+            ClearEntireCostmap, global_costmap_clear_service)
 
         lidar_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -293,6 +348,8 @@ class ZoneScan(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        self._cost_lidar_publisher = self.create_publisher(
+            PointCloud2, cost_lidar_topic, lidar_qos)
         self._tf_buffer = Buffer(cache_time=Duration(seconds=30.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._lidar_subscription = self.create_subscription(
@@ -310,11 +367,14 @@ class ZoneScan(Node):
             0.02, self._process_pending_lidar)
         # Republish so RViz recovers cleanly after a display reset.
         self._marker_timer = self.create_timer(1.0, self._publish_markers)
+        self._costmap_clear_timer = self.create_timer(
+            0.5, self._try_clear_global_costmap)
         self._publish_parking_mode()
         self._publish_parking_scan()
         self.get_logger().info(
             f'Loaded {len(self._utm_zones)} parking zones from {zone_file}. '
             f'Waiting for datum on {datum_topic}; LiDAR={lidar_topic}; '
+            f'cost LiDAR={cost_lidar_topic}; '
             f'accumulation_scope={self._accumulation_scope}; '
             f'point_to_line_icp={"enabled" if self._icp_enabled else "disabled"}; '
             f'gate_control={self._gate_control_enabled}; '
@@ -346,6 +406,55 @@ class ZoneScan(Node):
         message.data = self._parking_scan
         self._parking_scan_publisher.publish(message)
 
+    def _request_global_costmap_clear(self, reason: str) -> None:
+        self._global_costmap_clear_reason = reason
+        self._global_costmap_clear_pending = True
+        self._try_clear_global_costmap()
+
+    def _try_clear_global_costmap(self) -> None:
+        if (not self._global_costmap_clear_pending or
+                self._global_costmap_clear_in_flight):
+            return
+        if not self._global_costmap_clear_client.service_is_ready():
+            if not self._global_costmap_service_warning_reported:
+                self.get_logger().warning(
+                    f'{self._global_costmap_clear_reason}: global costmap '
+                    'clear service is not ready yet; retrying.')
+                self._global_costmap_service_warning_reported = True
+            return
+
+        self._global_costmap_service_warning_reported = False
+        self._global_costmap_clear_pending = False
+        self._global_costmap_clear_in_flight = True
+        self._global_costmap_clear_in_flight_reason = (
+            self._global_costmap_clear_reason)
+        future = self._global_costmap_clear_client.call_async(
+            ClearEntireCostmap.Request())
+        future.add_done_callback(self._on_global_costmap_cleared)
+        self.get_logger().info(
+            f'{self._global_costmap_clear_in_flight_reason}: clearing '
+            'global costmap.')
+
+    def _on_global_costmap_cleared(self, future) -> None:
+        self._global_costmap_clear_in_flight = False
+        completed_reason = self._global_costmap_clear_in_flight_reason
+        self._global_costmap_clear_in_flight_reason = ''
+        try:
+            future.result()
+        except Exception as error:  # noqa: BLE001 - ROS service exception
+            self.get_logger().error(
+                f'Failed to clear global costmap: {error}; retrying.')
+            if not self._global_costmap_clear_pending:
+                self._global_costmap_clear_reason = completed_reason
+                self._global_costmap_clear_pending = True
+            return
+
+        self.get_logger().info(
+            'Global costmap cleared; republishing ROI boundary costs.')
+        # ClearEntireCostmap removes every layer. Republish immediately so
+        # only the permanent ROI border is restored before new scans arrive.
+        self._publish_markers()
+
     def _set_parking_state(
             self, scan_enabled: bool, mode_enabled: bool,
             gate_name: str) -> None:
@@ -353,7 +462,10 @@ class ZoneScan(Node):
                 self._parking_mode == mode_enabled):
             return
 
-        if (scan_enabled and not self._parking_scan and
+        scan_starting = scan_enabled and not self._parking_scan
+        parking_mode_stopping = (
+            not mode_enabled and self._parking_mode)
+        if (scan_starting and
                 self._clear_map_on_start):
             self._occupied_voxels.clear()
         if self._parking_scan != scan_enabled:
@@ -363,6 +475,12 @@ class ZoneScan(Node):
 
         self._parking_scan = scan_enabled
         self._parking_mode = mode_enabled
+        if (scan_starting and
+                self._clear_global_costmap_on_scan_start):
+            self._request_global_costmap_clear('Parking scan started')
+        elif (parking_mode_stopping and
+                self._clear_global_costmap_on_parking_mode_stop):
+            self._request_global_costmap_clear('Parking mode stopped')
         self._publish_parking_scan()
         self._publish_parking_mode()
         self._publish_markers()
@@ -391,6 +509,59 @@ class ZoneScan(Node):
         ratio = max(0.0, min(1.0, ratio))
         closest = (start[0] + ratio * dx, start[1] + ratio * dy)
         return hypot(point[0] - closest[0], point[1] - closest[1])
+
+    def _publish_exit_gate_goal(
+            self, previous: Corner, current: Corner,
+            gate, display_name: str, zone_name: str) -> None:
+        if zone_name == 'ParkingZone1':
+            target = (
+                (gate[0][0] + gate[1][0]) * 0.5,
+                (gate[0][1] + gate[1][1]) * 0.5,
+            )
+        else:
+            delta_northing = gate[1][1] - gate[0][1]
+            if abs(delta_northing) <= 1e-12:
+                ratio = 0.5
+            else:
+                ratio = (
+                    self._zone2_exit_gate_northing - gate[0][1]
+                ) / delta_northing
+                ratio = max(0.0, min(1.0, ratio))
+            target = (
+                gate[0][0] + (gate[1][0] - gate[0][0]) * ratio,
+                gate[0][1] + delta_northing * ratio,
+            )
+
+        travel_x = current[0] - previous[0]
+        travel_y = current[1] - previous[1]
+        if hypot(travel_x, travel_y) <= 1e-6:
+            self.get_logger().warning(
+                f'{display_name}: GPS 이동량이 없어 출차 yaw를 저장할 수 '
+                '없습니다.')
+            return
+
+        entry_yaw_utm = atan2(travel_y, travel_x)
+        if zone_name == 'ParkingZone2':
+            # Zone2 exits with the same heading used when entering Gate B.
+            exit_yaw_utm = entry_yaw_utm
+        else:
+            # Zone1 returns through Gate A facing opposite to entry travel.
+            exit_yaw_utm = atan2(-travel_y, -travel_x)
+        goal = PoseStamped()
+        goal.header.stamp = self.get_clock().now().to_msg()
+        goal.header.frame_id = 'utm'
+        goal.pose.position.x = target[0]
+        goal.pose.position.y = target[1]
+        goal.pose.orientation.z = sin(exit_yaw_utm * 0.5)
+        goal.pose.orientation.w = cos(exit_yaw_utm * 0.5)
+        zone_message = String()
+        zone_message.data = zone_name
+        self._exit_zone_publisher.publish(zone_message)
+        self._exit_gate_goal_publisher.publish(goal)
+        self.get_logger().info(
+            f'{display_name}: {zone_name} 출차 목표 저장 '
+            f'E={target[0]:.2f}, N={target[1]:.2f}, '
+            f'yaw={exit_yaw_utm:.3f} rad.')
 
     @classmethod
     def _segments_intersect(cls, a, b, c, d) -> bool:
@@ -490,9 +661,17 @@ class ZoneScan(Node):
 
             if (gate_action in {'zone1_a', 'zone2_a'} and
                     not self._parking_scan and not self._parking_mode):
+                if gate_action == 'zone1_a':
+                    self._publish_exit_gate_goal(
+                        previous, current, gate, display_name,
+                        'ParkingZone1')
                 self._set_parking_state(True, False, display_name)
             elif (gate_action in {'zone1_b', 'zone2_b'} and
                     self._parking_scan and not self._parking_mode):
+                if gate_action == 'zone2_b':
+                    self._publish_exit_gate_goal(
+                        previous, current, gate, display_name,
+                        'ParkingZone2')
                 self._set_parking_state(False, True, display_name)
             elif (gate_action == 'zone1_a' and
                     not self._parking_scan and self._parking_mode):
@@ -604,6 +783,12 @@ class ZoneScan(Node):
         )
 
     def _on_lidar(self, message: PointCloud2) -> None:
+        # The global costmap consumes this gated topic instead of raw LiDAR.
+        # Stop publishing immediately when scan mode ends so new LiDAR costs
+        # cannot be marked during parking mode or ordinary driving.
+        if self._parking_scan:
+            self._cost_lidar_publisher.publish(message)
+
         if (not self._parking_scan or self._datum is None or
                 not message.header.frame_id):
             return
@@ -1001,6 +1186,7 @@ class ZoneScan(Node):
         clear.action = Marker.DELETEALL
         marker_array.markers.append(clear)
 
+        roi_boundary_points = []
         for zone_index, (zone_name, boundary) in enumerate(zones):
             outline = self._base_marker(
                 stamp, 'parking_zone_outline', zone_index, Marker.LINE_STRIP)
@@ -1028,6 +1214,28 @@ class ZoneScan(Node):
                     self._point(x, y, self._zone_height))
             marker_array.markers.append(outline)
 
+            # Costmap에는 열린 입구 변을 제외한 동일한 3면 테두리를
+            # 일정 간격 PointCloud2로 발행한다.
+            for segment_start, segment_end in zip(
+                    wall_path[:-1], wall_path[1:]):
+                delta_x = segment_end[0] - segment_start[0]
+                delta_y = segment_end[1] - segment_start[1]
+                segment_length = hypot(delta_x, delta_y)
+                segment_count = max(
+                    1, ceil(
+                        segment_length / self._roi_boundary_resolution))
+                for point_index in range(segment_count):
+                    ratio = point_index / segment_count
+                    roi_boundary_points.append((
+                        segment_start[0] + delta_x * ratio,
+                        segment_start[1] + delta_y * ratio,
+                        self._zone_height + 0.01,
+                    ))
+            roi_boundary_points.append((
+                wall_path[-1][0], wall_path[-1][1],
+                self._zone_height + 0.01,
+            ))
+
             label = self._base_marker(
                 stamp, 'parking_zone_label', zone_index,
                 Marker.TEXT_VIEW_FACING)
@@ -1041,6 +1249,10 @@ class ZoneScan(Node):
             label.color.a = 1.0
             label.text = zone_name
             marker_array.markers.append(label)
+
+        self._roi_boundary_points_publisher.publish(
+            point_cloud2.create_cloud_xyz32(
+                cloud_header, roi_boundary_points))
 
         datum_easting, datum_northing = self._datum
         gates = (

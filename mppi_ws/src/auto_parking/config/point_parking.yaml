@@ -22,6 +22,12 @@ point_parking:
     # 열린 변을 기준으로 이 깊이 안쪽의 벽점만 gap 계산에 사용한다.
     wall_search_depth: 4.0
     wall_behind_margin: 1.0
-    roi_endpoint_margin: 1.0
+    # 후보라인은 스캔 ROI의 +1m 확장을 사용하지 않고
+    # ParkingZone 열린 변의 실제 양끝에 정확히 맞춘다.
+    roi_endpoint_margin: 0.0
     min_zone_wall_points: 3
     marker_height: 0.15
+
+    # ParkingZone1 gap 중앙점에서 남쪽(S, UTM N 감소)으로
+    # 이동시켜 생성할 실제 1차 주차 goal offset(m)
+    zone1_first_parking_south_offset: 0.5

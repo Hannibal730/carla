@@ -69,9 +69,12 @@ class PointParking(Node):
         self.declare_parameter('wall_padding', 0.1)
         self.declare_parameter('wall_search_depth', 4.0)
         self.declare_parameter('wall_behind_margin', 1.0)
-        self.declare_parameter('roi_endpoint_margin', 1.0)
+        # 스캔은 zone 밖 roi_margin까지 수집하더라도, gap 후보선은
+        # 실제 ParkingZone의 열린 변 양끝을 넘지 않는다.
+        self.declare_parameter('roi_endpoint_margin', 0.0)
         self.declare_parameter('min_zone_wall_points', 3)
         self.declare_parameter('marker_height', 0.15)
+        self.declare_parameter('zone1_first_parking_south_offset', 0.5)
 
         zone_file = str(self.get_parameter('zone_file').value)
         self._frame_id = str(self.get_parameter('frame_id').value)
@@ -102,6 +105,9 @@ class PointParking(Node):
             self.get_parameter('min_zone_wall_points').value)
         self._marker_height = float(
             self.get_parameter('marker_height').value)
+        self._zone1_first_parking_south_offset = float(
+            self.get_parameter(
+                'zone1_first_parking_south_offset').value)
 
         if self._min_gap_width <= 0.0:
             raise ValueError('min_gap_width must be greater than zero')
@@ -117,6 +123,9 @@ class PointParking(Node):
             raise ValueError('roi_endpoint_margin cannot be negative')
         if self._min_zone_wall_points < 1:
             raise ValueError('min_zone_wall_points must be at least 1')
+        if self._zone1_first_parking_south_offset < 0.0:
+            raise ValueError(
+                'zone1_first_parking_south_offset cannot be negative')
 
         self._zones = self._load_zones(zone_file)
         self._datum: Corner | None = None
@@ -149,6 +158,8 @@ class PointParking(Node):
 
         self.get_logger().info(
             f'Point Parking started: min_gap={self._min_gap_width:.2f} m, '
+            f'zone1_first_south_offset='
+            f'{self._zone1_first_parking_south_offset:.2f} m, '
             f'wall_topic={occupied_points_topic}.')
 
     @staticmethod
@@ -254,9 +265,12 @@ class PointParking(Node):
         if inward_length <= 1e-9:
             return []
         inward /= inward_length
-        # Gap 탐색은 zone 안쪽 방향을 기준으로 유지하되, 주차 goal의
-        # 자세는 반대인 zone 안쪽 -> 열린 입구 방향으로 설정한다.
-        yaw_utm = math.atan2(float(-inward[1]), float(-inward[0]))
+        # Zone1은 zone 안쪽 -> 열린 입구 방향을 사용한다. Zone2는
+        # 평행주차 구역이므로 gap 방향과 관계없이 UTM 동쪽을 향한다.
+        if zone['name'] == 'ParkingZone2':
+            yaw_utm = 0.0
+        else:
+            yaw_utm = math.atan2(float(-inward[1]), float(-inward[0]))
 
         relative = utm_points - edge_start
         projections = relative @ edge_axis
@@ -306,13 +320,24 @@ class PointParking(Node):
             start_utm = edge_start + edge_axis * gap_start
             end_utm = edge_start + edge_axis * gap_end
             midpoint = (start_utm + end_utm) * 0.5
+            first_parking = midpoint.copy()
+            if zone['name'] == 'ParkingZone1':
+                # Gap 중앙점은 유지하고, 실제 1차 주차 goal만
+                # UTM 남쪽(S, Northing 감소)으로 offset한다.
+                first_parking[1] -= self._zone1_first_parking_south_offset
+            elif zone['name'] == 'ParkingZone2':
+                # 평행주차: gap에서는 Easting만 선택하고 Northing은
+                # ParkingZone2 ROI의 중앙값으로 고정한다.
+                first_parking[1] = float(centroid[1])
             candidates.append({
                 'zone': zone['name'],
                 'width': gap_end - gap_start,
                 'start': tuple(start_utm),
                 'end': tuple(end_utm),
-                'easting': float(midpoint[0]),
-                'northing': float(midpoint[1]),
+                'center_easting': float(midpoint[0]),
+                'center_northing': float(midpoint[1]),
+                'easting': float(first_parking[0]),
+                'northing': float(first_parking[1]),
                 'yaw': yaw_utm,
             })
         return candidates
@@ -377,6 +402,10 @@ class PointParking(Node):
                 candidate['end'][0] - datum_easting,
                 -(candidate['end'][1] - datum_northing),
             )
+            center_map = (
+                candidate['center_easting'] - datum_easting,
+                -(candidate['center_northing'] - datum_northing),
+            )
             goal_map = (
                 candidate['easting'] - datum_easting,
                 -(candidate['northing'] - datum_northing),
@@ -394,6 +423,30 @@ class PointParking(Node):
                 self._point(*end_map, self._marker_height),
             ]
             marker_array.markers.append(gap)
+
+            center = self._marker(
+                stamp, 'parking_gap_center', index, Marker.SPHERE)
+            center.pose.position.x = center_map[0]
+            center.pose.position.y = center_map[1]
+            center.pose.position.z = self._marker_height
+            center.scale.x = center.scale.y = center.scale.z = 0.22
+            center.color.r = center.color.g = center.color.b = 1.0
+            center.color.a = 0.9
+            marker_array.markers.append(center)
+
+            if goal_map != center_map:
+                offset_line = self._marker(
+                    stamp, 'parking_first_offset', index, Marker.LINE_STRIP)
+                offset_line.scale.x = 0.06
+                offset_line.color.r = 1.0
+                offset_line.color.g = 0.65
+                offset_line.color.b = 0.1
+                offset_line.color.a = 1.0
+                offset_line.points = [
+                    self._point(*center_map, self._marker_height),
+                    self._point(*goal_map, self._marker_height),
+                ]
+                marker_array.markers.append(offset_line)
 
             goal = self._marker(
                 stamp, 'parking_goal', index, Marker.SPHERE)
@@ -430,7 +483,8 @@ class PointParking(Node):
             label.color.r = label.color.g = label.color.b = 1.0
             label.color.a = 1.0
             label.text = (
-                f'{candidate["zone"]} gap={candidate["width"]:.2f}m')
+                f'{candidate["zone"]} first goal '
+                f'gap={candidate["width"]:.2f}m')
             marker_array.markers.append(label)
 
         self._marker_publisher.publish(marker_array)

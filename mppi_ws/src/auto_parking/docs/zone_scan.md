@@ -159,6 +159,15 @@ Zone2에 새로 생긴 voxel과 정합한다. ICP 전에는 ROI에 최대 보정
 전체 주행 공간을 의도적으로 누적해야 하는 경우에만 `accumulation_scope: global`
 을 사용한다. 이 모드에서는 주차존 ROI 필터가 적용되지 않는다.
 
+`/parkingScan`이 `false -> true`로 다시 시작되면 기본 설정에서
+`/global_costmap/clear_entirely_global_costmap`을 호출해 이전 global cost를
+초기화한다. 서비스 완료 직후 열린 입구를 제외한 ParkingZone 3면 테두리 cloud를
+다시 발행하므로 ROI 경계 cost는 유지되고, 나머지 장애물 cost는 새 LiDAR 스캔으로
+다시 생성된다. `/parkingScan`이 `true -> false`로 끝나면 새 LiDAR 입력만 중단하고
+Scan 중 생성된 cost는 주차가 진행되는 `/parkingMode=true` 동안 유지한다.
+`/parkingMode`가 `true -> false`로 바뀌는 재정비 전환 때 서비스를 다시 호출해
+LiDAR cost를 제거하고 ROI 경계 cost만 복원한다.
+
 시각화할 때는 점유 voxel의 상하좌우 이웃을 검사하여, 이웃이 없는 바깥쪽 모서리만
 `LINE_LIST`로 생성한다. 따라서 RViz에는 원본 점이 아니라 지금까지 누적된 점유
 영역의 2D 바운더리가 표시된다. 생성된 voxel은 `map` 좌표로 저장되며 노드가
@@ -238,6 +247,22 @@ ParkingZone1은 `A -> B -> A`, ParkingZone2는 `A -> B -> B` 상태 흐름을 �
 LiDAR PointCloud를 map에 누적할지는 `/parkingScan` 상태로 결정하며,
 `/parkingMode`는 B 게이트 첫 통과 후 켜진다. Zone1은 A 재통과, Zone2는 B
 재통과 시 꺼진다.
+
+출차에 사용할 gate 목표도 같은 상태 전환에서 저장한다.
+
+- ParkingZone1: Gate A 두 끝점의 중앙
+- ParkingZone2: Gate B 선분 위 `N=4650268.0`인 지점
+
+목표는 `/parking_exit/goal_utm`에 UTM Pose로, 구역 이름은
+`/parking_exit/zone`에 발행한다. Zone1 yaw는 Gate A 진입 방향의 반대 방향이고,
+Zone2 yaw는 Gate B 진입 당시 진행 방향을 그대로 사용한다. Zone1은 연석 근처에서
+바로 조향하지 않도록 1차 주차 goal까지 직선 전진한 뒤 Gate A 중앙을 향한 DUBIN
+경로로 전환한다.
+
+global costmap용 LiDAR도 `/parkingScan=true`인 동안에만
+`/zone_scan/cost_lidar_points`로 중계된다. Scan 종료 시 중계만 즉시 멈추며,
+누적된 global LiDAR cost는 주차 중 유지된다. `/parkingMode=false` 재정비 전환에서
+global costmap을 초기화한 뒤 ParkingZone ROI 3면 테두리 cost만 복원한다.
 
 각 게이트는 통과 직후 잠금 상태가 되며, 차량이 `gate_rearm_distance` 이상
 벗어난 뒤에만 다음 통과를 받을 수 있다. 따라서 GPS가 게이트 주변에서 흔들려도

@@ -57,7 +57,8 @@ controller_server:
 
     # ── 플러그인 목록 ─────────────────────────────────────────────────────────
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins:     ["goal_checker", "parking_goal_checker"]
+    goal_checker_plugins:
+      ["goal_checker", "first_parking_goal_checker", "parking_goal_checker"]
     controller_plugins:       ["FollowPath", "ParkingPath"]
     path_handler_plugins:     ["PathHandler"]
 
@@ -69,9 +70,10 @@ controller_server:
       plugin: "nav2_controller::SimpleProgressChecker"
       # movement_time_allowance 동안 required_movement_radius 이상 이동하지
       # 않으면 "진행 없음(stuck)"으로 판정 → FollowPath goal 실패 반환.
-      # 예: 10 s 동안 0.5 m 이상 이동하지 않으면 실패.
-      required_movement_radius: 0.5    # m
-      movement_time_allowance:  10.0   # s
+      # 주차 목표 근처의 저속 미세 정렬을 stuck으로 오판하지 않도록
+      # 20 s 동안 0.05 m 이상의 이동을 진행으로 인정한다.
+      required_movement_radius: 0.05   # m
+      movement_time_allowance:  20.0  # s
 
     # =========================================================================
     # goal_checker
@@ -86,6 +88,17 @@ controller_server:
       yaw_goal_tolerance: 0.3          # rad (≈17°, 정밀 주차가 아닌 경로 추종용)
 
     # =========================================================================
+    # first_parking_goal_checker
+    # 1차 주차 goal은 최종 E goal보다 일찍 완료 처리해, base_link가
+    # 목표를 통과하거나 목표 근처에서 과도하게 감속하는 현상을 방지한다.
+    # =========================================================================
+    first_parking_goal_checker:
+      stateful: true
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance:  0.35         # m, base_link(후륜축) 기준
+      yaw_goal_tolerance: 0.35         # rad (≈20°)
+
+    # =========================================================================
     # parking_goal_checker
     # ParkingPath(후진 주차) 전용 goal checker.
     # RViz 화살표 직선 위에 차량이 정확히 위치하려면 yaw 오차를 엄격하게 제한해야 함.
@@ -96,8 +109,9 @@ controller_server:
     parking_goal_checker:
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance:  0.05         # m
-      yaw_goal_tolerance: 0.1          # rad (≈6°, 화살표 직선 위 정렬용)
+      # base_link(후륜축) 기준 20 cm, yaw 약 11.5° 이내에서 주차 완료
+      xy_goal_tolerance:  0.20         # m
+      yaw_goal_tolerance: 0.20         # rad (≈11.5°)
 
     # =========================================================================
     # PathHandler
@@ -427,9 +441,9 @@ controller_server:
     # =========================================================================
     # ParkingPath — 주차 전용 MPPI Controller 플러그인
     # RViz "2D Goal Pose" 클릭 → 주차 시 이 플러그인이 사용됨.
-    # SmacPlannerHybrid(REEDS_SHEPP) 가 전진·후진 혼합 경로를 계획하므로
-    # MPPI 도 전진·후진 모두 허용해야 경로를 따라갈 수 있음.
-    # PreferForwardCritic 미포함 → 전진/후진 방향을 경로에 따라 자유롭게 선택.
+    # 주차 모드에서는 정지(vx=0) 또는 후진(vx<0)만 허용한다.
+    # planner에서도 DUBIN 경로를 반대로 계획한 뒤 뒤집어 후진 경로를 만든다.
+    # PreferForwardCritic는 사용하지 않아 후진 궤적에 패널티를 부여하지 않는다.
     # 나머지 파라미터는 FollowPath 와 동일.
     # =========================================================================
     ParkingPath:
@@ -446,8 +460,8 @@ controller_server:
       batch_size: 1000
       open_loop: false
 
-      # 전진·후진 모두 허용 — SmacPlannerHybrid REEDS_SHEPP 경로 실행에 필수
-      vx_max:  2.0                     # m/s  (전진 허용, CSV 추종보다 낮게 제한)
+      # 전진 금지: 정지는 허용하되 양의 vx는 생성할 수 없다.
+      vx_max:  0.0                     # m/s  (주차 모드 전진 금지)
       vx_min: -2.0                     # m/s  (최대 후진 속도)
       wz_max:  1.5                     # rad/s
 
@@ -484,7 +498,8 @@ controller_server:
           "PathAlignCritic",
           "PathFollowCritic",
           "PathAngleCritic",
-          # PreferForwardCritic 제거 — 후진 패널티 없애야 후진만 함
+          "VelocityDeadbandCritic",
+          # PreferForwardCritic 미사용 — 후진 패널티 제거
         ]
 
       ConstraintCritic:
@@ -513,7 +528,7 @@ controller_server:
         symmetric_yaw_tolerance: false
 
       # PathAlignCritic
-      # use_path_orientations: true — REEDS_SHEPP 경로 waypoint 의 orientation(차량 heading)
+      # use_path_orientations: true — 뒤집은 DUBIN 경로 waypoint의 차량 heading
       # 을 위치뿐 아니라 방향까지 반영해 평가 → 후진 경로에서 heading 추종 정밀도 향상.
       PathAlignCritic:
         enabled: true
@@ -542,6 +557,15 @@ controller_server:
         # forward_preference: false 로 설정해 후진 경로 방향 정렬 허용
         forward_preference: false
 
+      # 목표 직전에서 후진 속도가 과도하게 떨어지는 크리핑 억제.
+      # 절대 vx가 0.25 m/s보다 작은 궤적에 비용을 부여하며,
+      # goal checker가 허용 반경에서 FollowPath를 성공 종료하면 0으로 정지한다.
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 35.0
+        deadband_velocities: [0.25, 0.0, 0.0]
+
       CostCritic:
         enabled: true
         cost_weight: 3.81
@@ -550,6 +574,29 @@ controller_server:
         collision_cost: 1000000.0
         critical_cost: 300.0
         near_goal_distance: 1.0
+
+
+# =============================================================================
+# follow_path_client — 주차 경로 실행 및 시각화
+# =============================================================================
+follow_path_client:
+  ros__parameters:
+    # RViz 경로 발행 스위치. 경로 계산/추종 동작에는 영향을 주지 않는다.
+    parking_path_visualization_enabled: true
+    parking_path_raw_topic: /parking_path/smac_reverse
+    parking_path_final_topic: /parking_path/final_reverse
+    parking_path_exit_straight_topic: /parking_path/exit_straight
+    parking_path_exit_topic: /parking_path/exit_forward
+
+    # zone_scan이 Zone1 Gate A 중앙 또는 Zone2 Gate B 지정점을 저장한다.
+    parking_exit_goal_topic: /parking_exit/goal_utm
+    parking_exit_zone_topic: /parking_exit/zone
+    exit_straight_path_step: 0.2
+
+    # ParkingZone1의 1차 주차 성공 후에만 UTM E 목표까지 N 고정 직선 후진.
+    # ParkingZone2는 이 단계를 생략하고 Gate B 출차로 바로 전환한다.
+    final_reverse_easting: 417069.41
+    final_reverse_path_step: 0.2
 
 
 # =============================================================================
@@ -607,7 +654,7 @@ local_costmap:
       # rolling_window 이동으로 자연 소멸됨.
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: true
+        enabled: false
         observation_sources: lidar_2d
 
         lidar_2d:
@@ -701,9 +748,11 @@ planner_server:
       plugin: "nav2_smac_planner/SmacPlannerHybrid"
 
       # ── 운동 모델 ──────────────────────────────────────────────────────────
-      # REEDS_SHEPP: 전진 + 후진 모두 허용 → 주차 기동 필수
-      # DUBIN      : 전진만 허용 (주차 불가)
-      motion_model_for_search: "REEDS_SHEPP"
+      # DUBIN으로 주차 목표 → 현재 위치의 전진 경로를 계획한 뒤,
+      # mode_manager가 pose 순서를 뒤집어 전 구간 후진 경로로 사용한다.
+      # DUBIN은 원본 경로에 후진 cusp가 생기지 않으므로, 뒤집은 경로도
+      # 전진 구간 없이 후진으로만 구성된다.
+      motion_model_for_search: "DUBIN"
 
       # ── Ackermann 최소 회전반경 ────────────────────────────────────────────
       # MPPI ackermann.min_turning_r 과 반드시 일치시킬 것.
@@ -753,9 +802,9 @@ planner_server:
 #   CSV 경로 및 주차 목표(goal_pose) 가 map 프레임으로 발행되므로 플래너가 같은 프레임에서 경로를 탐색해야 좌표 변환 없이 일관성 유지.
 #   RViz 에서 "2D Goal Pose" 클릭 시 Fixed Frame 이 map 이어야 goal_pose.header.frame_id = "map" 으로 발행되어 TF 변환 실패를 방지.
 #
-# 정적 지도(map_server) 없이 LiDAR 실시간 장애물만으로 운용.
-# 차량 주변 LiDAR 가 인식한 장애물만 반영되므로, 시야 밖 장애물은
-# 경로 계획에서 고려되지 않는다.
+# 정적 지도(map_server) 없이 실시간 LiDAR와 ParkingZone ROI 테두리를 사용한다.
+# 열린 입구를 제외한 3면 테두리가 lethal obstacle로 마킹되므로 Smac 경로가
+# 정의된 주차영역 벽을 넘어가지 않는다.
 # =============================================================================
 global_costmap:
   global_costmap:
@@ -793,15 +842,16 @@ global_costmap:
       # ※ CARLA 실측 치수로 검증 후 조정 권장.
       footprint: "[[2.1, 0.74], [2.1, -0.74], [-0.4, -0.74], [-0.4, 0.74]]"
 
-      # 정적 지도 없이 LiDAR 장애물 레이어만 사용
+      # Scan 중에만 중계되는 LiDAR와 ROI 테두리를 obstacle layer에 반영한다.
       plugins: ["obstacle_layer", "inflation_layer"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: lidar_2d
+        observation_sources: lidar_2d zone_scan_roi_boundary
         lidar_2d:
-          topic: /carla/car/lidar_2d/point_cloud
+          # zone_scan이 /parkingScan=true일 때만 원본 LiDAR를 중계한다.
+          topic: /zone_scan/cost_lidar_points
           data_type: PointCloud2
           # 2D LiDAR 는 높이 정보 없음 → 수직 범위를 넓게 설정해 모든 포인트 수용.
           max_obstacle_height: 2.0     # m
@@ -817,6 +867,21 @@ global_costmap:
           #   raytrace_max_range 보다 반드시 작게 유지 (빈공간 클리어 > 마킹 범위).
           raytrace_max_range: 18.0     # m
           obstacle_max_range: 15.0     # m
+
+        # ParkingZone의 열린 입구를 제외한 3면 ROI 테두리를
+        # LETHAL_OBSTACLE로 마킹한다. cloud가 map frame이므로 별도 TF 변환 없이
+        # SmacPlannerHybrid가 정의된 주차영역 외벽을 직접 회피한다.
+        zone_scan_roi_boundary:
+          topic: /zone_scan/roi_boundary_points
+          data_type: PointCloud2
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          marking: true
+          clearing: false
+          # map 원점을 sensor origin으로 보므로 200m rolling costmap 전체를
+          # 포함할 수 있도록 원본 LiDAR보다 충분히 크게 설정한다.
+          obstacle_max_range: 300.0
+          observation_persistence: 0.0
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

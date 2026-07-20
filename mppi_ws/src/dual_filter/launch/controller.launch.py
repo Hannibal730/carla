@@ -8,9 +8,10 @@ lifecycle_manager 가 autostart=True 로 두 서버를 자동으로
 configure → activate 전환하므로 별도의 lifecycle set 명령이 불필요하다.
 
 모드 전환:
-  - RViz 또는 auto_parking/parking → /goal_pose 발행 → mode_manager 수신
+  - RViz → /goal_pose, auto_parking/parking → /point_parking/nav_goal
+    발행 → mode_manager 수신
     → CSV 추종 취소 → planner_server 경로 계산 → MPPI 주차 기동
-  - 주차 완료 후 자동으로 CSV 경로 추종 복귀
+  - Point Parking 완료 후 고정 E까지 직선 후진, 이후 CSV 복귀
 
 사용법:
   source /opt/ros/humble/setup.bash
@@ -64,7 +65,7 @@ def generate_launch_description():
         executable='follow_path_client',
         name='follow_path_client',
         output='screen',
-        parameters=[{'use_sim_time': True}],
+        parameters=[params_file, {'use_sim_time': True}],
     )
 
     return LaunchDescription([

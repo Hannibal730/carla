@@ -20,7 +20,7 @@ zone_scan:
     gate_rearm_distance: 1.5
 
     # true이면 각 구역 스캔 시작 시 이전 누적점을 지운다.
-    clear_map_on_start: false
+    clear_map_on_start: true
 
     utm_position_topic: /f9p_utm
     parking_mode_topic: /parkingMode

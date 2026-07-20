@@ -14,13 +14,22 @@
               /parking UTM -> map 변환
                          |
                          v
-                 /goal_pose (map)
+          /point_parking/nav_goal (map)
                          |
                          v
        dual_filter mode_manager / ComputePathToPose
                          |
                          v
        FollowPath(controller_id=ParkingPath) / MPPI
+                         |
+                  1차 주차 성공
+                    /          \
+          ParkingZone1       ParkingZone2
+                 |                |
+                 v                v
+  N 고정, E=417069.41 후진   2차 후진 생략
+                 |                |
+                 +------ 전진 출차 ------+
 ```
 
 ## 좌표 변환
@@ -54,6 +63,12 @@ CARLA/ROS map 축과 UTM northing 축의 방향 차이 때문에 Y와 yaw 부호
 | `point_goal_topic` | `/point_parking/goal_pose` | 절대 UTM 대표 goal |
 | `point_goal_valid_topic` | `/point_parking/goal_valid` | 대표 goal 유효 여부 |
 | `datum_topic` | `/utm_datum` | UTM 기준점 |
-| `output_goal_topic` | `/goal_pose` | mode_manager 입력 |
+| `output_goal_topic` | `/point_parking/nav_goal` | mode_manager의 Point Parking 전용 입력 |
 | `utm_frame_id` | `utm` | 입력 goal frame |
 | `map_frame_id` | `map` | Nav2 goal frame |
+
+ParkingZone1의 Point Parking goal이 성공하면 mode manager는
+`/odometry/global`의 현재 위치에서 N을 고정하고, UTM
+`E=417069.41`까지 0.2 m 간격의 직선 path를 만들어 `ParkingPath`로
+2차 후진한다. ParkingZone2는 이 단계를 생략하고 Gate B 출차 경로로 바로
+전환한다. RViz의 일반 `/goal_pose`는 자동 출차 시퀀스를 실행하지 않는다.

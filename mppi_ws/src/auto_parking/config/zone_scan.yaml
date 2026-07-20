@@ -22,3 +22,25 @@ zone_scan:
     icp_max_point_to_line_rmse: 0.15
 
     occupied_points_topic: /zone_scan/occupied_points
+
+    # 원본 LiDAR를 parkingScan=true인 동안에만 이 토픽으로 중계한다.
+    # global costmap은 원본 토픽 대신 이 게이트 토픽을 구독한다.
+    cost_lidar_topic: /zone_scan/cost_lidar_points
+
+    # ParkingZone의 열린 입구를 제외한 3면 ROI 테두리를 global costmap에 제공한다.
+    roi_boundary_points_topic: /zone_scan/roi_boundary_points
+    roi_boundary_resolution: 0.1
+
+    # Zone1은 Gate A 중앙과 진입 반대 yaw를 사용한다.
+    # Zone2는 Gate B의 지정 Northing과 진입 당시 진행 방향의 yaw를 사용한다.
+    exit_gate_goal_topic: /parking_exit/goal_utm
+    exit_zone_topic: /parking_exit/zone
+    zone2_exit_gate_northing: 4650268.0
+
+    # Scan 시작 때 이전 주행 cost를 지우고 새 LiDAR cost를 수집한다.
+    # Scan 종료 후 parkingMode=true인 주차 중에는 수집한 cost를 유지한다.
+    # parkingMode가 true→false로 재정비 상태가 될 때 LiDAR cost를 지운다.
+    # 각 clear 완료 직후 ROI 3면 테두리는 자동으로 다시 발행된다.
+    clear_global_costmap_on_scan_start: true
+    clear_global_costmap_on_parking_mode_stop: true
+    global_costmap_clear_service: /global_costmap/clear_entirely_global_costmap
