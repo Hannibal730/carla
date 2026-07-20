@@ -11,7 +11,13 @@ from geometry_msgs.msg import Point, PointStamped, PoseStamped
 from nav2_msgs.srv import ClearEntireCostmap
 import numpy as np
 import rclpy
-from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.msg import (
+    Parameter as ParameterMessage,
+    ParameterDescriptor,
+    ParameterType,
+    ParameterValue,
+)
+from rcl_interfaces.srv import SetParameters
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import (
@@ -135,6 +141,11 @@ class ZoneScan(Node):
         self.declare_parameter(
             'global_costmap_clear_service',
             '/global_costmap/clear_entirely_global_costmap')
+        self.declare_parameter('zone1_global_inflation_radius', 1.5)
+        self.declare_parameter('zone2_global_inflation_radius', 2.0)
+        self.declare_parameter(
+            'global_costmap_set_parameters_service',
+            '/global_costmap/global_costmap/set_parameters')
         self.declare_parameter('utm_position_topic', '/f9p_utm')
         self.declare_parameter('parking_mode_topic', '/parkingMode')
         self.declare_parameter('parking_scan_topic', '/parkingScan')
@@ -225,6 +236,13 @@ class ZoneScan(Node):
                 'clear_global_costmap_on_parking_mode_stop').value)
         global_costmap_clear_service = str(
             self.get_parameter('global_costmap_clear_service').value)
+        self._zone1_global_inflation_radius = float(
+            self.get_parameter('zone1_global_inflation_radius').value)
+        self._zone2_global_inflation_radius = float(
+            self.get_parameter('zone2_global_inflation_radius').value)
+        global_costmap_set_parameters_service = str(
+            self.get_parameter(
+                'global_costmap_set_parameters_service').value)
         utm_position_topic = str(
             self.get_parameter('utm_position_topic').value)
         parking_mode_topic = str(
@@ -286,6 +304,12 @@ class ZoneScan(Node):
         if self._gate_rearm_distance <= self._gate_tolerance:
             raise ValueError(
                 'gate_rearm_distance must be greater than gate_tolerance')
+        if self._zone1_global_inflation_radius <= 0.0:
+            raise ValueError(
+                'zone1_global_inflation_radius must be greater than zero')
+        if self._zone2_global_inflation_radius <= 0.0:
+            raise ValueError(
+                'zone2_global_inflation_radius must be greater than zero')
         if self._gate_control_enabled:
             self._validate_gate(
                 'zone1_gate_a_utm', self._zone1_gate_a_utm)
@@ -316,6 +340,14 @@ class ZoneScan(Node):
         self._global_costmap_service_warning_reported = False
         self._global_costmap_clear_reason = ''
         self._global_costmap_clear_in_flight_reason = ''
+        self._inflation_update_pending = False
+        self._inflation_update_in_flight = False
+        self._inflation_service_warning_reported = False
+        self._requested_inflation_radius = (
+            self._zone1_global_inflation_radius)
+        self._in_flight_inflation_radius = None
+        self._applied_inflation_radius = None
+        self._inflation_update_reason = ''
 
         latched_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -341,6 +373,8 @@ class ZoneScan(Node):
             Bool, parking_scan_topic, latched_qos)
         self._global_costmap_clear_client = self.create_client(
             ClearEntireCostmap, global_costmap_clear_service)
+        self._global_costmap_parameters_client = self.create_client(
+            SetParameters, global_costmap_set_parameters_service)
 
         lidar_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -367,8 +401,8 @@ class ZoneScan(Node):
             0.02, self._process_pending_lidar)
         # Republish so RViz recovers cleanly after a display reset.
         self._marker_timer = self.create_timer(1.0, self._publish_markers)
-        self._costmap_clear_timer = self.create_timer(
-            0.5, self._try_clear_global_costmap)
+        self._costmap_maintenance_timer = self.create_timer(
+            0.5, self._maintain_global_costmap)
         self._publish_parking_mode()
         self._publish_parking_scan()
         self.get_logger().info(
@@ -410,6 +444,82 @@ class ZoneScan(Node):
         self._global_costmap_clear_reason = reason
         self._global_costmap_clear_pending = True
         self._try_clear_global_costmap()
+
+    def _maintain_global_costmap(self) -> None:
+        self._try_clear_global_costmap()
+        self._try_update_global_inflation_radius()
+
+    def _request_global_inflation_radius(
+            self, radius: float, reason: str) -> None:
+        if (self._applied_inflation_radius is not None and
+                abs(self._applied_inflation_radius - radius) <= 1e-9 and
+                not self._inflation_update_in_flight):
+            return
+        self._requested_inflation_radius = radius
+        self._inflation_update_reason = reason
+        self._inflation_update_pending = True
+        self._try_update_global_inflation_radius()
+
+    def _try_update_global_inflation_radius(self) -> None:
+        if (not self._inflation_update_pending or
+                self._inflation_update_in_flight):
+            return
+        if not self._global_costmap_parameters_client.service_is_ready():
+            if not self._inflation_service_warning_reported:
+                self.get_logger().warning(
+                    'Global costmap parameter service is not ready; '
+                    'inflation radius update will be retried.')
+                self._inflation_service_warning_reported = True
+            return
+
+        parameter = ParameterMessage()
+        parameter.name = 'inflation_layer.inflation_radius'
+        parameter.value = ParameterValue(
+            type=ParameterType.PARAMETER_DOUBLE,
+            double_value=self._requested_inflation_radius,
+        )
+        request = SetParameters.Request()
+        request.parameters = [parameter]
+
+        self._inflation_service_warning_reported = False
+        self._inflation_update_pending = False
+        self._inflation_update_in_flight = True
+        self._in_flight_inflation_radius = (
+            self._requested_inflation_radius)
+        future = self._global_costmap_parameters_client.call_async(request)
+        future.add_done_callback(self._on_global_inflation_radius_updated)
+        self.get_logger().info(
+            f'{self._inflation_update_reason}: requesting global inflation '
+            f'radius={self._in_flight_inflation_radius:.2f} m.')
+
+    def _on_global_inflation_radius_updated(self, future) -> None:
+        requested_radius = self._in_flight_inflation_radius
+        self._in_flight_inflation_radius = None
+        self._inflation_update_in_flight = False
+        try:
+            response = future.result()
+            result = response.results[0] if response.results else None
+        except Exception as error:  # noqa: BLE001 - ROS service exception
+            self.get_logger().error(
+                f'Failed to update global inflation radius: {error}; '
+                'retrying.')
+            result = None
+
+        if result is None or not result.successful:
+            reason = '' if result is None else result.reason
+            if reason:
+                self.get_logger().error(
+                    f'Global inflation radius update rejected: {reason}; '
+                    'retrying.')
+            if not self._inflation_update_pending:
+                self._requested_inflation_radius = requested_radius
+                self._inflation_update_pending = True
+            return
+
+        self._applied_inflation_radius = requested_radius
+        self.get_logger().info(
+            f'Global inflation radius applied: '
+            f'{requested_radius:.2f} m.')
 
     def _try_clear_global_costmap(self) -> None:
         if (not self._global_costmap_clear_pending or
@@ -662,9 +772,16 @@ class ZoneScan(Node):
             if (gate_action in {'zone1_a', 'zone2_a'} and
                     not self._parking_scan and not self._parking_mode):
                 if gate_action == 'zone1_a':
+                    self._request_global_inflation_radius(
+                        self._zone1_global_inflation_radius,
+                        'ParkingZone1 entered')
                     self._publish_exit_gate_goal(
                         previous, current, gate, display_name,
                         'ParkingZone1')
+                else:
+                    self._request_global_inflation_radius(
+                        self._zone2_global_inflation_radius,
+                        'ParkingZone2 entered')
                 self._set_parking_state(True, False, display_name)
             elif (gate_action in {'zone1_b', 'zone2_b'} and
                     self._parking_scan and not self._parking_mode):
@@ -678,6 +795,9 @@ class ZoneScan(Node):
                 self._set_parking_state(False, False, display_name)
             elif (gate_action == 'zone2_b' and
                     not self._parking_scan and self._parking_mode):
+                self._request_global_inflation_radius(
+                    self._zone1_global_inflation_radius,
+                    'ParkingZone2 exited')
                 self._set_parking_state(False, False, display_name)
             break
 

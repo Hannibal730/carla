@@ -75,6 +75,8 @@ class PointParking(Node):
         self.declare_parameter('min_zone_wall_points', 3)
         self.declare_parameter('marker_height', 0.15)
         self.declare_parameter('zone1_first_parking_south_offset', 0.5)
+        self.declare_parameter('zone2_goal_ratio_n', 1.0)
+        self.declare_parameter('zone2_goal_ratio_m', 1.0)
 
         zone_file = str(self.get_parameter('zone_file').value)
         self._frame_id = str(self.get_parameter('frame_id').value)
@@ -108,6 +110,10 @@ class PointParking(Node):
         self._zone1_first_parking_south_offset = float(
             self.get_parameter(
                 'zone1_first_parking_south_offset').value)
+        self._zone2_goal_ratio_n = float(
+            self.get_parameter('zone2_goal_ratio_n').value)
+        self._zone2_goal_ratio_m = float(
+            self.get_parameter('zone2_goal_ratio_m').value)
 
         if self._min_gap_width <= 0.0:
             raise ValueError('min_gap_width must be greater than zero')
@@ -126,6 +132,13 @@ class PointParking(Node):
         if self._zone1_first_parking_south_offset < 0.0:
             raise ValueError(
                 'zone1_first_parking_south_offset cannot be negative')
+        if (self._zone2_goal_ratio_n < 0.0 or
+                self._zone2_goal_ratio_m < 0.0 or
+                self._zone2_goal_ratio_n +
+                self._zone2_goal_ratio_m <= 0.0):
+            raise ValueError(
+                'zone2 goal ratio n and m must be non-negative and '
+                'their sum must be greater than zero')
 
         self._zones = self._load_zones(zone_file)
         self._datum: Corner | None = None
@@ -326,8 +339,17 @@ class PointParking(Node):
                 # UTM 남쪽(S, Northing 감소)으로 offset한다.
                 first_parking[1] -= self._zone1_first_parking_south_offset
             elif zone['name'] == 'ParkingZone2':
-                # 평행주차: gap에서는 Easting만 선택하고 Northing은
-                # ParkingZone2 ROI의 중앙값으로 고정한다.
+                # 시작→goal : goal→끝 = n:m 내분점의 Easting을 사용한다.
+                # n:m=1:1이면 기존과 같은 gap 중앙이다.
+                goal_ratio = (
+                    self._zone2_goal_ratio_n /
+                    (self._zone2_goal_ratio_n +
+                     self._zone2_goal_ratio_m)
+                )
+                first_parking[0] = (
+                    start_utm[0] +
+                    (end_utm[0] - start_utm[0]) * goal_ratio)
+                # 평행주차 Northing은 ParkingZone2 ROI 중앙값으로 고정한다.
                 first_parking[1] = float(centroid[1])
             candidates.append({
                 'zone': zone['name'],

@@ -31,3 +31,9 @@ point_parking:
     # ParkingZone1 gap 중앙점에서 남쪽(S, UTM N 감소)으로
     # 이동시켜 생성할 실제 1차 주차 goal offset(m)
     zone1_first_parking_south_offset: 0.5
+
+    # ParkingZone2 선택 gap의 시작→goal : goal→끝 내분비.
+    # 1:1은 중앙, 2:1은 시작점에서 끝점 방향으로 2/3 지점이다.
+    # Northing은 비율과 관계없이 ParkingZone2 ROI 중앙값으로 고정된다.
+    zone2_goal_ratio_n: 3.0
+    zone2_goal_ratio_m: 1.0

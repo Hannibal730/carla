@@ -17,7 +17,9 @@ ParkingZone1의 열린 변은 `좌전방 -> 우전방`, ParkingZone2의 열린 �
 5. ROI 끝점과 첫 벽, 인접한 두 벽, 마지막 벽과 ROI 끝점 사이를 검사한다.
 6. 빈 구간 폭이 `min_gap_width` 이상이면 그 구간 중심을 후보 중앙점으로 만든다.
 7. ParkingZone1의 실제 1차 주차 goal은 중앙점에서 남쪽(S, UTM N 감소)으로 0.5 m 이동시킨다.
-8. ParkingZone2는 평행주차이므로 gap 중앙에서 E값만 사용하고, N값은 ParkingZone2 ROI 네 꼭짓점의 평균 Northing으로 고정한다.
+8. ParkingZone2는 선택된 gap을 `시작→goal : goal→끝 = n:m`으로 내분한
+   지점에서 E값만 사용하고, N값은 ParkingZone2 ROI 네 꼭짓점의 평균
+   Northing으로 고정한다.
 9. 후보 중 폭이 가장 큰 공간을 대표 goal로 선택한다.
 
 벽점이 하나도 없으면 ROI끝-ROI끝 공간을 임의의 빈 주차공간으로 판단하지 않는다.
@@ -39,10 +41,14 @@ datum 상대 `map` 좌표로 변환하고 CARLA/ROS Y 반전을 적용해 표시
 ParkingZone2 goal은 다음처럼 결정된다.
 
 ```text
-goal_E   = 선택된 gap 중앙 E
+ratio    = n / (n + m)
+goal_E   = gap_start_E + (gap_end_E - gap_start_E) × ratio
 goal_N   = mean(ParkingZone2 네 꼭짓점의 N)
 goal_yaw = 0 rad (UTM East)
 ```
+
+따라서 `n:m=1:1`이면 중앙, `2:1`이면 gap 시작점에서 끝점 방향으로 `2/3`
+지점, `1:2`이면 `1/3` 지점이 된다.
 
 대표 goal은 가장 넓은 gap이며, 모든 후보는 `/point_parking/goal_candidates`에
 `PoseArray`로 발행한다. 후보가 사라지면 `/point_parking/goal_valid=false`와 빈
@@ -60,6 +66,8 @@ wall_behind_margin: 1.0
 roi_endpoint_margin: 0.0
 min_zone_wall_points: 3
 zone1_first_parking_south_offset: 0.5
+zone2_goal_ratio_n: 1.0
+zone2_goal_ratio_m: 1.0
 ```
 
 - `wall_merge_distance`: 인접 투영점을 같은 벽으로 합칠 최대 간격
@@ -68,3 +76,5 @@ zone1_first_parking_south_offset: 0.5
 - `wall_behind_margin`: 열린 변 바깥쪽 센서점 허용 범위
 - `roi_endpoint_margin`: ParkingZone 열린 변 양끝의 후보라인 확장 거리(기본 0m)
 - `zone1_first_parking_south_offset`: ParkingZone1 중앙점에서 실제 1차 goal을 남쪽으로 이동할 거리
+- `zone2_goal_ratio_n`, `zone2_goal_ratio_m`: ParkingZone2 gap의
+  `시작→goal : goal→끝` 내분비

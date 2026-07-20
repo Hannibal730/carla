@@ -57,13 +57,15 @@ CSV 경로 추종 복귀
 평행주차 규칙을 사용한다.
 
 ```text
-goal_E   = 선택한 gap 중앙 Easting
+ratio    = zone2_goal_ratio_n / (zone2_goal_ratio_n + zone2_goal_ratio_m)
+goal_E   = gap_start_E + (gap_end_E - gap_start_E) × ratio
 goal_N   = ParkingZone2 네 꼭짓점의 평균 Northing
 goal_yaw = 0 rad (UTM 동쪽)
 ```
 
 현재 zone 좌표에서 고정되는 Northing은 `4650276.25`이다. gap 탐색 결과에 따라
-Easting만 달라진다. map 변환 후에도 목표 yaw는 `0 rad`가 된다.
+Easting만 달라진다. `1:1`은 기존 중앙값이며 `2:1`은 gap 시작에서 끝 방향으로
+`2/3` 지점이다. map 변환 후에도 목표 yaw는 `0 rad`가 된다.
 
 코스 규칙상 가장 넓은 gap이 실제 목표이므로 다른 후보의 플래너 성공 여부는
 비교하지 않는다.
@@ -195,6 +197,8 @@ follow_path_client:
 | `zone_scan_roi_boundary.obstacle_max_range` | map 원점에서 더 먼 ROI 테두리까지 마킹 | 먼 주차구역 테두리가 제외될 수 있음 |
 | `clear_global_costmap_on_scan_start` | `true`이면 새 scan 시작마다 과거 global cost 초기화 | `false`이면 이전 cost를 유지 |
 | `clear_global_costmap_on_parking_mode_stop` | `true`이면 재정비 전환 때 LiDAR global cost 제거 | `false`이면 완료된 주차의 cost가 다음 상태에도 남음 |
+| `zone1_global_inflation_radius` | Zone1 및 일반 상태의 global 회피반경 증가 | 장애물에 더 가까운 경로 허용 |
+| `zone2_global_inflation_radius` | Zone2 전용 global 회피반경 증가 | Zone2의 좁은 공간 경로 생성 여유 증가 |
 
 `minimum_turning_radius`와 footprint는 Smac, MPPI, global/local costmap에서 동일한
 차량 실측값을 사용해야 한다.

@@ -888,7 +888,9 @@ global_costmap:
         # local_costmap 과 동일한 팽창 설정 유지.
         # planner 가 장애물 주변으로 여유 경로를 탐색하게 함.
         # 팽창 비용 공식: cost(d) = 252 × exp(−cost_scaling_factor × (d − robot_radius))
-        inflation_radius: 1.5          # m  (local_costmap 과 동일)
+        # Zone1 기본값. zone_scan이 Zone2 진입 시 2.0m로 동적 변경하고
+        # Zone2 출차 시 이 값으로 복원한다.
+        inflation_radius: 1.5          # m
         cost_scaling_factor: 3.0       # (local_costmap 과 동일)
 
       # false: 변경된 셀만 발행 → global_costmap 트래픽 절약.
