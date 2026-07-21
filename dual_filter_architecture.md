@@ -2087,6 +2087,18 @@ python PythonAPI/util/config.py --map Mando6 \
      --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
 ```
 
+**만도 풀트랙 맵 (MandoFullTrack_Center / MandoFullTrack_Left / MandoFullTrack_Right) 버전:** `--map`에 `MandoFullTrack_Center` / `MandoFullTrack_Left` / `MandoFullTrack_Right` 중 하나를 지정한다(사용할 맵이 import 돼 있어야 함, Section 15). RoadRunner로 제작한 전체 주행 트랙(각 맵 **79 roads / 7 junctions**)의 세 가지 변형으로, **세 맵 모두 도로 범위가 동일**하다(xodr 기준 east/west x ≈ [-186.97 ~ 98.40], north/south y ≈ [-131.91 ~ 115.02]). 이름이 나타내듯 `Center` / `Left` / `Right`는 레퍼런스 경로 기록용 주행 차선(중앙/좌/우)이 다른 버전이며, 원본은 각각 `CustomMap/MandoFullTrack_Center/`·`CustomMap/MandoFullTrack_Left/`·`CustomMap/MandoFullTrack_Right/`에 `<맵이름>.fbx`+`.xodr`로 보관돼 있다(basename = 맵 이름). 도로 범위가 Mando1~6과 다르므로 스폰 좌표는 아래 예시의 placeholder를 그대로 쓰지 말고 [15.7 E-2](#157-step-e--section-121-연동-맵--스폰-좌표)로 원하는 위치를 차선에 스냅해 구한다.
+
+```bash
+# MandoFullTrack_Center / _Left / _Right (스폰 좌표 <X>/<Y>/<YAW>는 15.7 E-2로 산출)
+cd ~/carla
+source .venv/bin/activate
+python PythonAPI/util/config.py --map MandoFullTrack_Center \
+  && python PythonAPI/examples/manual_control.py --rolename car \
+     --filter vehicle.micro.microlino --generation 2 --sync \
+     --spawn-x <X> --spawn-y <Y> --spawn-z 0.3 --spawn-yaw <YAW>
+```
+
 #### 터미널 3 — 센서 브리지 (`/clock` 포함)
 
 ```bash
