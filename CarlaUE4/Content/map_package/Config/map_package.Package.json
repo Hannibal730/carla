@@ -2,8 +2,18 @@
     "props": [],
     "maps": [
         {
-            "name": "Mando6",
-            "path": "/Game/map_package/Maps/Mando6",
+            "name": "MandoFullTrack_Left",
+            "path": "/Game/map_package/Maps/MandoFullTrack_Left",
+            "use_carla_materials": true
+        },
+        {
+            "name": "MandoFullTrack_Right",
+            "path": "/Game/map_package/Maps/MandoFullTrack_Right",
+            "use_carla_materials": true
+        },
+        {
+            "name": "MandoFullTrack_Center",
+            "path": "/Game/map_package/Maps/MandoFullTrack_Center",
             "use_carla_materials": true
         }
     ]
