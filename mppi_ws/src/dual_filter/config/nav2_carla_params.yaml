@@ -200,11 +200,11 @@ controller_server:
       # vx_min: 소폭 후진 허용 (경로 시작점 재접근 등).
       # wz_max: min_turning_r 과 물리적으로 일관되어야 함.
       #   wz_max = vx_max / min_turning_r = 5.0 / 3.3 ≈ 1.5 rad/s
-      vx_max:  5.0                      # m/s  ← 처음엔 2.0으로 시작 권장
+      vx_max:  4.0                      # m/s  ← 처음엔 2.0으로 시작 권장
       # vx_min: 주차 후진 기동을 위해 -2.0으로 확장.
       # CSV 추종 중 불필요한 후진은 PreferForwardCritic이 억제하므로
       # 두 모드를 별도로 설정할 필요 없음.
-      vx_min: -2.0                     # m/s  (변경: -0.5→-2.0, 주차 후진 허용)
+      vx_min: -4.0                     # m/s  (변경: -0.5→-2.0, 주차 후진 허용)
       wz_max:  1.5                     # rad/s
 
       # ── MPPI 반복 횟수 ────────────────────────────────────────────────────
@@ -462,7 +462,7 @@ controller_server:
 
       # 전진 금지: 정지는 허용하되 양의 vx는 생성할 수 없다.
       vx_max:  0.0                     # m/s  (주차 모드 전진 금지)
-      vx_min: -2.0                     # m/s  (최대 후진 속도)
+      vx_min: -4.0                     # m/s  (최대 후진 속도)
       wz_max:  1.5                     # rad/s
 
       vx_std: 0.3

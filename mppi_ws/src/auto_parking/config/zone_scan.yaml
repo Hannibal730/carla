@@ -48,5 +48,5 @@ zone_scan:
     # Zone2에서만 global obstacle inflation 반경을 확대한다.
     # Zone2 Gate A 진입 때 2.0m, Zone2 출차 때 Zone1 기본값 1.5m로 복원한다.
     zone1_global_inflation_radius: 1.5
-    zone2_global_inflation_radius: 2.0
+    zone2_global_inflation_radius: 1.5
     global_costmap_set_parameters_service: /global_costmap/global_costmap/set_parameters

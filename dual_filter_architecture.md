@@ -2096,7 +2096,7 @@ source .venv/bin/activate
 python PythonAPI/util/config.py --map MandoFullTrack_Center \
   && python PythonAPI/examples/manual_control.py --rolename car \
      --filter vehicle.micro.microlino --generation 2 --sync \
-     --spawn-x <X> --spawn-y <Y> --spawn-z 0.3 --spawn-yaw <YAW>
+     --spawn-x -93.6 --spawn-y 0.0 --spawn-z 0.3 --spawn-yaw -90.0
 ```
 
 #### 터미널 3 — 센서 브리지 (`/clock` 포함)
